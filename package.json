@@ -1,0 +1,25 @@
+{
+  "name": "tessera",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure self-hosted collaborative project management platform",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24 <28",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @tessera/api --filter @tessera/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.6"
+  }
+}

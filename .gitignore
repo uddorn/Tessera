@@ -147,3 +147,19 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# OS / IDE
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Docker volumes and local data
+.docker-data/
+pgdata/
+valkey-data/
+
+# Keys and certificates
+*.pem
+*.key
