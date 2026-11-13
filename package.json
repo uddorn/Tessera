@@ -15,7 +15,8 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "infra:env": "node scripts/create-local-env.mjs"
   },
   "devDependencies": {
     "prettier": "^3.6.2",
