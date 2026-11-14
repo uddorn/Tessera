@@ -94,7 +94,6 @@ services:
       KC_METRICS_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME: localhost
-      JAVA_OPTS_KC_HEAP: -XX:MaxHeapFreeRatio=30 -XX:MaxRAMPercentage=65
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
