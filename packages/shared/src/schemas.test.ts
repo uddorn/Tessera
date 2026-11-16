@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { moveTaskCommandSchema, taskSchema } from "./schemas.js";
+import {
+  createProjectSchema,
+  createWorkspaceSchema,
+  moveTaskCommandSchema,
+  taskSchema,
+} from "./schemas.js";
 
 describe("shared contracts", () => {
   it("accepts a valid PAY task", () => {
@@ -19,7 +24,32 @@ describe("shared contracts", () => {
 
   it("rejects a move without optimistic-lock version", () => {
     expect(() =>
-      moveTaskCommandSchema.parse({ taskId: "task-42", targetColumnId: "col-03" }),
+      moveTaskCommandSchema.parse({
+        taskId: "task-42",
+        targetColumnId: "col-03",
+      }),
+    ).toThrow();
+  });
+
+  it("normalizes a project code for stable task keys", () => {
+    expect(
+      createProjectSchema.parse({
+        code: "tes",
+        name: "Tessera",
+      }),
+    ).toEqual({
+      code: "TES",
+      name: "Tessera",
+      description: "",
+    });
+  });
+
+  it("rejects an unsafe workspace slug", () => {
+    expect(() =>
+      createWorkspaceSchema.parse({
+        slug: "Tessera Workspace",
+        name: "Tessera",
+      }),
     ).toThrow();
   });
 });

@@ -1,29 +1,139 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import {
+  type INestApplication,
+  StandardSchemaValidationPipe,
+} from '@nestjs/common';
+import { getDrizzleToken } from '@nestjs/drizzle';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import { App } from 'supertest/types.js';
-import { AppModule } from './../src/app.module.js';
+import type { App } from 'supertest/types.js';
+import { AppModule } from '../src/app.module.js';
+import { ApplicationErrorFilter } from '../src/boundary/http/application-error.filter.js';
+import type { Database } from '../src/infrastructure/database/database.js';
+import { workspaces } from '../src/infrastructure/database/schema.js';
 
-describe('AppController (e2e)', () => {
+describe('Sprint 2 persistence (e2e)', () => {
   let app: INestApplication<App>;
+  let database: Database;
+  let workspaceId: string;
+  let projectId: string;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
+    database = moduleFixture.get<Database>(getDrizzleToken());
     app = moduleFixture.createNestApplication();
+    app.useGlobalPipes(new StandardSchemaValidationPipe());
+    app.useGlobalFilters(new ApplicationErrorFilter());
+    app.setGlobalPrefix('api');
     await app.init();
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
+  it('reports PostgreSQL as healthy', async () => {
+    await request(app.getHttpServer())
+      .get('/api/health')
       .expect(200)
-      .expect('Hello World!');
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          status: 'ok',
+          sprint: 2,
+          database: 'up',
+        });
+      });
   });
 
-  afterEach(async () => {
+  it('persists a workspace, project, board and sequential tasks', async () => {
+    const slug = `tessera-${randomUUID().slice(0, 8)}`;
+
+    const workspaceResponse = await request(app.getHttpServer())
+      .post('/api/workspaces')
+      .send({ slug, name: 'Tessera E2E' })
+      .expect(201);
+
+    workspaceId = workspaceResponse.body.workspaceId as string;
+    expect(workspaceResponse.body).toMatchObject({
+      slug,
+      name: 'Tessera E2E',
+    });
+
+    const projectResponse = await request(app.getHttpServer())
+      .post(`/api/workspaces/${workspaceId}/projects`)
+      .send({
+        code: 'tes',
+        name: 'Persistence Vertical Slice',
+        description: 'Created by the Sprint 2 e2e test',
+      })
+      .expect(201);
+
+    projectId = projectResponse.body.projectId as string;
+    expect(projectResponse.body).toMatchObject({
+      workspaceId,
+      code: 'TES',
+      name: 'Persistence Vertical Slice',
+    });
+
+    const firstTask = await request(app.getHttpServer())
+      .post(`/api/projects/${projectId}/tasks`)
+      .send({
+        title: 'Create PostgreSQL schema',
+        priority: 'HIGH',
+        storyPoints: 5,
+      })
+      .expect(201);
+
+    const secondTask = await request(app.getHttpServer())
+      .post(`/api/projects/${projectId}/tasks`)
+      .send({ title: 'Verify repository adapter' })
+      .expect(201);
+
+    expect(firstTask.body).toMatchObject({
+      taskKey: 'TES-1',
+      status: 'PLANNED',
+      priority: 'HIGH',
+      version: 1,
+    });
+    expect(secondTask.body).toMatchObject({
+      taskKey: 'TES-2',
+      status: 'PLANNED',
+      priority: 'NORMAL',
+      storyPoints: 0,
+    });
+
+    const projectsResponse = await request(app.getHttpServer())
+      .get(`/api/workspaces/${workspaceId}/projects`)
+      .expect(200);
+    expect(projectsResponse.body).toHaveLength(1);
+
+    const tasksResponse = await request(app.getHttpServer())
+      .get(`/api/projects/${projectId}/tasks`)
+      .expect(200);
+    expect(tasksResponse.body).toHaveLength(2);
+  });
+
+  it('rejects invalid payloads, duplicate codes and missing parents', async () => {
+    await request(app.getHttpServer())
+      .post('/api/workspaces')
+      .send({ slug: 'Invalid Workspace', name: '' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post(`/api/workspaces/${workspaceId}/projects`)
+      .send({ code: 'TES', name: 'Duplicate code' })
+      .expect(409);
+
+    await request(app.getHttpServer())
+      .post(`/api/workspaces/${randomUUID()}/projects`)
+      .send({ code: 'NEW', name: 'Missing workspace' })
+      .expect(404);
+  });
+
+  afterAll(async () => {
+    if (workspaceId) {
+      await database.delete(workspaces).where(eq(workspaces.id, workspaceId));
+    }
     await app.close();
   });
 });

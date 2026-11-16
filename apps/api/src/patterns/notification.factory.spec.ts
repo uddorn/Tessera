@@ -1,4 +1,7 @@
-import { PushMentionDispatcher, TaskDomainEvent } from './notification.factory.js';
+import {
+  PushMentionDispatcher,
+  TaskDomainEvent,
+} from './notification.factory.js';
 
 describe('Notification Factory Method', () => {
   it('uses high priority for a mention', async () => {
