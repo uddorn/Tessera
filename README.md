@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Sprint 1B verified" src="https://img.shields.io/badge/Sprint_1B-verified-00c853?style=for-the-badge" />
+  <img alt="Sprint 2 verified" src="https://img.shields.io/badge/Sprint_2-verified-00c853?style=for-the-badge" />
 </p>
 
 <p align="center">
@@ -22,11 +22,14 @@ Tessera evolves a coursework architectural MVP into a bachelor-level product wit
 ## What is working now
 
 - React 19 boundary application powered by Vite;
-- NestJS 12 API with health and architecture endpoints;
+- NestJS 12 API with health, architecture, workspace, project, and task endpoints;
 - shared Zod schemas, DTOs, and domain-event contracts;
 - domain rules for WIP limits and task state transitions;
 - migrated Factory Method, Builder, Singleton, and State patterns;
-- six passing automated tests plus lint, typecheck, and production builds;
+- PostgreSQL persistence through Drizzle ORM with versioned migrations;
+- transactional project setup with a Kanban board and four default columns;
+- sequential task keys and database-backed conflict/not-found handling;
+- thirteen passing automated tests plus lint, typecheck, and production builds;
 - five healthy Docker services with persistent data and loopback-only ports.
 
 ## Architecture
@@ -45,14 +48,28 @@ flowchart LR
         Mailpit[Mailpit SMTP]
     end
 
-    API -. next integrations .-> PostgreSQL
+    API -->|Drizzle ORM · migrations| PostgreSQL
     API -. cache and queues .-> Valkey
     API -. attachments .-> Garage
     API -. OIDC and RBAC .-> Keycloak
     API -. notifications .-> Mailpit
 ```
 
-The infrastructure is already operational. Dashed connections identify the application integrations scheduled for the next vertical slices.
+PostgreSQL is now part of a complete application vertical slice. Dashed connections identify integrations scheduled for future sprints.
+
+## Persistence vertical slice
+
+Sprint 2 connects the application core to PostgreSQL without leaking ORM details into the application layer. Controllers validate shared Zod contracts, services depend on a repository port, and the Drizzle adapter owns transactions and database error translation.
+
+| Method | Endpoint                                | Outcome                                            |
+| ------ | --------------------------------------- | -------------------------------------------------- |
+| `POST` | `/api/workspaces`                       | Creates a workspace                                |
+| `POST` | `/api/workspaces/:workspaceId/projects` | Creates a project, board, and four Kanban columns  |
+| `GET`  | `/api/workspaces/:workspaceId/projects` | Lists persisted projects                           |
+| `POST` | `/api/projects/:projectId/tasks`        | Creates a task with a sequential key such as TES-1 |
+| `GET`  | `/api/projects/:projectId/tasks`        | Lists persisted project tasks                      |
+
+The initial migration creates seven constrained tables: `users`, `workspaces`, `projects`, `project_memberships`, `boards`, `board_columns`, and `tasks`. E2E tests run against the real containerized database and remove their fixtures afterward.
 
 ## Verified infrastructure
 
@@ -103,6 +120,7 @@ Start the complete stack and wait for its health checks:
 ```bash
 sudo docker compose up -d --wait --wait-timeout 240
 sudo docker compose ps
+pnpm db:migrate
 ```
 
 Useful verification commands:
@@ -144,13 +162,15 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm db:check
+pnpm test:e2e
 ```
 
 ## Repository layout
 
 ```text
 apps/
-  api/       NestJS boundary, application, domain, and infrastructure layers
+  api/       NestJS vertical slices, Drizzle schema, and SQL migrations
   web/       React boundary application
 packages/
   shared/    Zod schemas, DTOs, and domain-event contracts
@@ -165,19 +185,19 @@ compose.yaml
 ## Roadmap
 
 <p align="center">
-  <img alt="Roadmap progress: 2 of 5 milestones complete" src="https://img.shields.io/badge/Roadmap-2_of_5_milestones_complete-00c853?style=for-the-badge" />
+  <img alt="Roadmap progress: 3 of 6 milestones complete" src="https://img.shields.io/badge/Roadmap-3_of_6_milestones_complete-00c853?style=for-the-badge" />
 </p>
 
 | Status    | Milestone                         | Outcome                                                          |
 | --------- | --------------------------------- | ---------------------------------------------------------------- |
 | ✅ Done   | **Sprint 1A · Architecture**      | Monorepo, domain core, shared contracts, and design patterns     |
 | ✅ Done   | **Sprint 1B · Infrastructure**    | Reproducible, secure, and fully verified self-hosted stack       |
-| 🎯 Next   | **Sprint 2 · Persistence**        | PostgreSQL integration, ORM schema, migrations, and repositories |
-| ◌ Planned | **Sprint 3 · Identity**           | Keycloak OIDC authentication and role-based access control       |
+| ✅ Done   | **Sprint 2 · Persistence**        | PostgreSQL integration, ORM schema, migrations, and repositories |
+| 🎯 Next   | **Sprint 3 · Identity**           | Keycloak OIDC authentication and role-based access control       |
 | ◌ Planned | **Sprint 4 · Platform Services**  | S3 attachments, audit history, and notification delivery         |
 | ◌ Planned | **Sprint 5 · Product Experience** | Kanban UI, accessibility, and real-time collaboration            |
 
-**Current focus:** Sprint 2 turns the verified infrastructure into the first complete end-to-end vertical slice.
+**Current focus:** Sprint 3 will connect Keycloak to the verified persistence slice and enforce workspace roles at the API boundary.
 
 ---
 
