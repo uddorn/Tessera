@@ -20,7 +20,7 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
-    "pretest:e2e": "pnpm db:migrate",
+    "pretest:e2e": "pnpm --filter @tessera/shared build && pnpm db:migrate",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
