@@ -7,8 +7,10 @@ import type {
   PersistedTaskDto,
   ProjectDto,
   WorkspaceDto,
+  MovePersistedTaskCommand,
 } from '@tessera/shared';
 import { and, asc, eq, sql } from 'drizzle-orm';
+import { TaskStateContext } from '../../../domain/task-state.pattern.js';
 import type { Database } from '../../../infrastructure/database/database.js';
 import { hasPostgresErrorCode } from '../../../infrastructure/database/postgres-error.js';
 import {
@@ -221,5 +223,95 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .orderBy(asc(tasks.createdAt));
 
     return rows.map(toTaskDto);
+  }
+
+  async getBoard(projectId: string) {
+    const [board] = await this.db
+      .select()
+      .from(boards)
+      .where(eq(boards.projectId, projectId));
+    if (!board) throw new ResourceNotFoundError('Board for project', projectId);
+    const columns = await this.db
+      .select()
+      .from(boardColumns)
+      .where(eq(boardColumns.boardId, board.id))
+      .orderBy(asc(boardColumns.position));
+    const projectTasks = await this.listTasks(projectId);
+    return {
+      boardId: board.id,
+      projectId,
+      name: board.name,
+      columns: columns.map((column) => ({
+        columnId: column.id,
+        title: column.title,
+        status: column.status,
+        position: column.position,
+        wipLimit: column.wipLimit,
+        tasks: projectTasks.filter((task) => task.columnId === column.id),
+      })),
+    };
+  }
+
+  async moveTask(
+    taskId: string,
+    command: MovePersistedTaskCommand,
+  ): Promise<PersistedTaskDto> {
+    return this.db.transaction(async (tx) => {
+      const [initial] = await tx
+        .select()
+        .from(tasks)
+        .where(eq(tasks.id, taskId));
+      if (!initial) throw new ResourceNotFoundError('Task', taskId);
+      // Serialize all board moves for the project, including WIP checks.
+      await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.id, initial.projectId))
+        .for('update');
+      const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId));
+      if (!task) throw new ResourceNotFoundError('Task', taskId);
+      if (task.version !== command.expectedVersion)
+        throw new ResourceConflictError('Task version is outdated');
+      try {
+        new TaskStateContext().assertTransition(
+          task.status,
+          command.targetStatus,
+        );
+      } catch {
+        throw new ResourceConflictError('Task state transition is not allowed');
+      }
+      const [target] = await tx
+        .select({ id: boardColumns.id, wipLimit: boardColumns.wipLimit })
+        .from(boardColumns)
+        .innerJoin(boards, eq(boards.id, boardColumns.boardId))
+        .where(
+          and(
+            eq(boards.projectId, task.projectId),
+            eq(boardColumns.status, command.targetStatus),
+          ),
+        );
+      if (!target)
+        throw new ResourceNotFoundError(
+          'Target column for project',
+          task.projectId,
+        );
+      const [{ total }] = await tx
+        .select({ total: sql<number>`count(*)::int` })
+        .from(tasks)
+        .where(eq(tasks.columnId, target.id));
+      if (total >= target.wipLimit)
+        throw new ResourceConflictError('Target column WIP limit reached');
+      const [updated] = await tx
+        .update(tasks)
+        .set({
+          columnId: target.id,
+          status: command.targetStatus,
+          version: task.version + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId))
+        .returning();
+      return toTaskDto(updated);
+    });
   }
 }

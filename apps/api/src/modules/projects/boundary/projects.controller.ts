@@ -6,12 +6,15 @@ import {
   HttpStatus,
   Param,
   Post,
+  Patch,
 } from '@nestjs/common';
 import {
   createProjectSchema,
   createTaskSchema,
   createWorkspaceSchema,
   resourceIdSchema,
+  movePersistedTaskSchema,
+  type MovePersistedTaskCommand,
   type CreateProjectCommand,
   type CreateTaskCommand,
   type CreateWorkspaceCommand,
@@ -60,5 +63,21 @@ export class ProjectsController {
     @Param('projectId', { schema: resourceIdSchema }) projectId: string,
   ) {
     return this.projectsService.listTasks(projectId);
+  }
+
+  @Get('projects/:projectId/board')
+  getBoard(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+  ) {
+    return this.projectsService.getBoard(projectId);
+  }
+
+  @Patch('tasks/:taskId/status')
+  moveTask(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Body({ schema: movePersistedTaskSchema })
+    command: MovePersistedTaskCommand,
+  ) {
+    return this.projectsService.moveTask(taskId, command);
   }
 }

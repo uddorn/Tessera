@@ -18,6 +18,7 @@ describe('Sprint 2 persistence (e2e)', () => {
   let database: Database;
   let workspaceId: string;
   let projectId: string;
+  let taskId: string;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -89,6 +90,8 @@ describe('Sprint 2 persistence (e2e)', () => {
       .send({ title: 'Verify repository adapter' })
       .expect(201);
 
+    taskId = firstTask.body.taskId as string;
+
     expect(firstTask.body).toMatchObject({
       taskKey: 'TES-1',
       status: 'PLANNED',
@@ -111,6 +114,36 @@ describe('Sprint 2 persistence (e2e)', () => {
       .get(`/api/projects/${projectId}/tasks`)
       .expect(200);
     expect(tasksResponse.body).toHaveLength(2);
+  });
+
+  it('reads the board and applies guarded task transitions', async () => {
+    const board = await request(app.getHttpServer())
+      .get(`/api/projects/${projectId}/board`)
+      .expect(200);
+    expect(board.body.columns).toHaveLength(4);
+    expect(board.body.columns[0].tasks).toHaveLength(2);
+    await request(app.getHttpServer())
+      .patch(`/api/tasks/${taskId}/status`)
+      .send({ targetStatus: 'DONE', expectedVersion: 1 })
+      .expect(409);
+    await request(app.getHttpServer())
+      .patch(`/api/tasks/${taskId}/status`)
+      .send({ targetStatus: 'IN_PROGRESS', expectedVersion: 1 })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({ status: 'IN_PROGRESS', version: 2 });
+      });
+    await request(app.getHttpServer())
+      .patch(`/api/tasks/${taskId}/status`)
+      .send({ targetStatus: 'CODE_REVIEW', expectedVersion: 1 })
+      .expect(409);
+    const updated = await request(app.getHttpServer())
+      .get(`/api/projects/${projectId}/board`)
+      .expect(200);
+    expect(updated.body.columns[1].tasks).toHaveLength(1);
+    await request(app.getHttpServer())
+      .get(`/api/projects/${randomUUID()}/board`)
+      .expect(404);
   });
 
   it('rejects invalid payloads, duplicate codes and missing parents', async () => {

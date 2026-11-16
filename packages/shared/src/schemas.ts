@@ -77,6 +77,12 @@ export const persistedTaskSchema = taskSchema.extend({
   updatedAt: z.iso.datetime(),
 });
 
+export const movePersistedTaskSchema = z.strictObject({
+  targetStatus: taskStatusSchema,
+  expectedVersion: z.number().int().positive(),
+});
+export type MovePersistedTaskCommand = z.infer<typeof movePersistedTaskSchema>;
+
 export const domainEventSchema = z.object({
   eventId: z.string().min(1),
   eventType: z.enum(["TASK_MOVED", "USER_MENTIONED", "SPRINT_DEADLINE"]),

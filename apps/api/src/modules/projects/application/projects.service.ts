@@ -3,6 +3,7 @@ import type {
   CreateProjectCommand,
   CreateTaskCommand,
   CreateWorkspaceCommand,
+  MovePersistedTaskCommand,
 } from '@tessera/shared';
 import {
   PROJECT_REPOSITORY,
@@ -34,5 +35,12 @@ export class ProjectsService {
 
   listTasks(projectId: string) {
     return this.repository.listTasks(projectId);
+  }
+
+  getBoard(projectId: string) {
+    return this.repository.getBoard(projectId);
+  }
+  moveTask(taskId: string, command: MovePersistedTaskCommand) {
+    return this.repository.moveTask(taskId, command);
   }
 }

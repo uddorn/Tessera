@@ -5,6 +5,7 @@ import type {
   PersistedTaskDto,
   ProjectDto,
   WorkspaceDto,
+  MovePersistedTaskCommand,
 } from '@tessera/shared';
 
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
@@ -21,4 +22,9 @@ export interface ProjectRepository {
     command: CreateTaskCommand,
   ): Promise<PersistedTaskDto>;
   listTasks(projectId: string): Promise<PersistedTaskDto[]>;
+  getBoard(projectId: string): Promise<unknown>;
+  moveTask(
+    taskId: string,
+    command: MovePersistedTaskCommand,
+  ): Promise<PersistedTaskDto>;
 }
