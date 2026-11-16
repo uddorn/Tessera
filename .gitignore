@@ -155,6 +155,9 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
+# Local coding-agent guidance
+apps/api/AGENTS.md
+
 # Docker volumes and local data
 .docker-data/
 pgdata/
