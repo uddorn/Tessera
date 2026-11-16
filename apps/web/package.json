@@ -8,10 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "typecheck": "tsc -b --pretty false",
-    "test": "node -e \"console.log('Web tests start in Sprint 5')\"",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tessera/shared": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

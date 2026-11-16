@@ -111,6 +111,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@tessera/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       react:
         specifier: ^19.3.1
         version: 19.3.1
