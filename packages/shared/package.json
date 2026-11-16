@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude dist/**",
+    "test": "vitest run --exclude \"dist/**\"",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
