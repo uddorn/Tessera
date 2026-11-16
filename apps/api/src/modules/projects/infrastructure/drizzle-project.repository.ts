@@ -10,6 +10,7 @@ import type {
 } from '@tessera/shared';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../../../infrastructure/database/database.js';
+import { hasPostgresErrorCode } from '../../../infrastructure/database/postgres-error.js';
 import {
   boardColumns,
   boards,
@@ -42,15 +43,6 @@ const defaultColumns = [
   },
   { title: 'Done', status: 'DONE', position: 3, wipLimit: 1000 },
 ] as const;
-
-function isPostgresError(error: unknown, code: string): boolean {
-  return (
-    !!error &&
-    typeof error === 'object' &&
-    'code' in error &&
-    error.code === code
-  );
-}
 
 function toWorkspaceDto(row: WorkspaceRow): WorkspaceDto {
   return {
@@ -105,7 +97,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
       return toWorkspaceDto(created);
     } catch (error) {
-      if (isPostgresError(error, '23505')) {
+      if (hasPostgresErrorCode(error, '23505')) {
         throw new ResourceConflictError(
           `Workspace slug ${command.slug} is already in use`,
         );
@@ -143,10 +135,10 @@ export class DrizzleProjectRepository implements ProjectRepository {
         return toProjectDto(createdProject);
       });
     } catch (error) {
-      if (isPostgresError(error, '23503')) {
+      if (hasPostgresErrorCode(error, '23503')) {
         throw new ResourceNotFoundError('Workspace', workspaceId);
       }
-      if (isPostgresError(error, '23505')) {
+      if (hasPostgresErrorCode(error, '23505')) {
         throw new ResourceConflictError(
           `Project code ${command.code} already exists in this workspace`,
         );
