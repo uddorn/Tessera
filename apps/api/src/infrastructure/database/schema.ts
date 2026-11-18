@@ -108,6 +108,26 @@ export const projects = pgTable(
   ],
 );
 
+export const workspaceMemberships = pgTable(
+  'workspace_memberships',
+  {
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: projectRoleEnum('role').notNull().default('MEMBER'),
+    joinedAt: timestamp('joined_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.userId] }),
+    index('workspace_memberships_user_idx').on(table.userId),
+  ],
+);
+
 export const projectMemberships = pgTable(
   'project_memberships',
   {

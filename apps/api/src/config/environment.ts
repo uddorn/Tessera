@@ -7,4 +7,6 @@ export const environmentSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   WEB_ORIGIN: z.url().default('http://localhost:5173'),
   DATABASE_URL: z.url(),
+  KEYCLOAK_ISSUER: z.url(),
+  KEYCLOAK_CLIENT_ID: z.string().min(1).default('tessera-web'),
 });

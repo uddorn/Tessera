@@ -11,10 +11,15 @@ import type {
 export const PROJECT_REPOSITORY = Symbol('PROJECT_REPOSITORY');
 
 export interface ProjectRepository {
-  createWorkspace(command: CreateWorkspaceCommand): Promise<WorkspaceDto>;
+  createWorkspace(
+    command: CreateWorkspaceCommand,
+    ownerId: string,
+  ): Promise<WorkspaceDto>;
+  listWorkspaces(userId: string): Promise<WorkspaceDto[]>;
   createProject(
     workspaceId: string,
     command: CreateProjectCommand,
+    ownerId: string,
   ): Promise<ProjectDto>;
   listProjects(workspaceId: string): Promise<ProjectDto[]>;
   createTask(

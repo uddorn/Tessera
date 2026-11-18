@@ -82,7 +82,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.2
-    command: ["start-dev", "--server-async-bootstrap=false"]
+    command: ["start-dev", "--server-async-bootstrap=false", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:?KEYCLOAK_ADMIN is required}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required}
@@ -94,8 +94,13 @@ services:
       KC_METRICS_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME: localhost
+      TESSERA_DEMO_OWNER_PASSWORD: ${TESSERA_DEMO_OWNER_PASSWORD:?TESSERA_DEMO_OWNER_PASSWORD is required}
+      TESSERA_DEMO_MEMBER_PASSWORD: ${TESSERA_DEMO_MEMBER_PASSWORD:?TESSERA_DEMO_MEMBER_PASSWORD is required}
+      TESSERA_DEMO_VIEWER_PASSWORD: ${TESSERA_DEMO_VIEWER_PASSWORD:?TESSERA_DEMO_VIEWER_PASSWORD is required}
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import:ro
     depends_on:
       postgres:
         condition: service_healthy

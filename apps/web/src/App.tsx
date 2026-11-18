@@ -6,10 +6,15 @@ import {
   createTask,
   createWorkspace,
   getBoard,
+  listProjects,
+  listWorkspaces,
+  myProjectRole,
+  addProjectMember,
   moveTask,
   type BoardDto,
 } from "./api";
 import { adjacentStatus, boardSummary, slugify, statusLabels } from "./board";
+import { auth } from "./auth";
 import "./App.css";
 
 interface Session {
@@ -20,11 +25,12 @@ interface Session {
   projectCode: string;
 }
 
-const SESSION_KEY = "tessera.coursework.session";
+const sessionKey = () =>
+  `tessera.coursework.session.${auth.subject ?? "guest"}`;
 
 function loadSession(): Session | null {
   try {
-    const value = localStorage.getItem(SESSION_KEY);
+    const value = localStorage.getItem(sessionKey());
     return value ? (JSON.parse(value) as Session) : null;
   } catch {
     return null;
@@ -45,6 +51,27 @@ function Setup({ onReady }: { onReady: (session: Session) => void }) {
   const [projectCode, setProjectCode] = useState("TES");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [available, setAvailable] = useState<Session[]>([]);
+
+  useEffect(() => {
+    void listWorkspaces()
+      .then(async (workspaces) => {
+        const choices = await Promise.all(
+          workspaces.map(async (workspace) => {
+            const projects = await listProjects(workspace.workspaceId);
+            return projects.map((project) => ({
+              workspaceId: workspace.workspaceId,
+              workspaceName: workspace.name,
+              projectId: project.projectId,
+              projectName: project.name,
+              projectCode: project.code,
+            }));
+          }),
+        );
+        setAvailable(choices.flat());
+      })
+      .catch(() => setError("Не вдалося завантажити ваші проєкти"));
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -108,6 +135,16 @@ function Setup({ onReady }: { onReady: (session: Session) => void }) {
         <p className="overline">Швидкий старт</p>
         <h2>Створіть першу дошку</h2>
         <p className="muted">Дані зберігатимуться у локальному PostgreSQL.</p>
+        {available.length > 0 && (
+          <div className="existing-projects">
+            <p>Ваші проєкти</p>
+            {available.map((item) => (
+              <button key={item.projectId} onClick={() => onReady(item)}>
+                {item.projectName} <small>{item.projectCode}</small>
+              </button>
+            ))}
+          </div>
+        )}
         <form onSubmit={submit}>
           <label>
             Робочий простір
@@ -154,10 +191,12 @@ function TaskCard({
   task,
   moving,
   onMove,
+  canWrite,
 }: {
   task: PersistedTaskDto;
   moving: boolean;
   onMove: (task: PersistedTaskDto, direction: -1 | 1) => void;
+  canWrite: boolean;
 }) {
   const previous = adjacentStatus(task.status, -1);
   const next = adjacentStatus(task.status, 1);
@@ -181,7 +220,7 @@ function TaskCard({
           ◆ {task.storyPoints}
         </span>
         <div className="move-actions">
-          {previous && (
+          {canWrite && previous && (
             <button
               disabled={moving}
               onClick={() => onMove(task, -1)}
@@ -190,7 +229,7 @@ function TaskCard({
               ←
             </button>
           )}
-          {next && (
+          {canWrite && next && (
             <button
               disabled={moving}
               onClick={() => onMove(task, 1)}
@@ -223,6 +262,22 @@ function BoardApp({
   const [storyPoints, setStoryPoints] = useState(3);
   const [savingTask, setSavingTask] = useState(false);
   const [movingTask, setMovingTask] = useState<string | null>(null);
+  const [role, setRole] = useState<
+    "OWNER" | "ADMIN" | "MEMBER" | "VIEWER" | null
+  >(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">(
+    "MEMBER",
+  );
+
+  useEffect(() => {
+    void myProjectRole(session.projectId)
+      .then((value) => setRole(value.role))
+      .catch(() => setError("Немає доступу до цього проєкту. Оберіть інший."));
+  }, [session.projectId]);
+  const canWrite = role === "OWNER" || role === "ADMIN" || role === "MEMBER";
+  const canManage = role === "OWNER" || role === "ADMIN";
 
   const refresh = useCallback(async () => {
     try {
@@ -294,6 +349,20 @@ function BoardApp({
     }
   }
 
+  async function submitInvite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    try {
+      await addProjectMember(session.projectId, inviteEmail.trim(), inviteRole);
+      setInviteOpen(false);
+      setInviteEmail("");
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Не вдалося додати учасника",
+      );
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -353,8 +422,14 @@ function BoardApp({
           >
             <span className="profile-avatar">DT</span>
             <span>
-              <b>Дмитро Ткаченко</b>
-              <small>Власник простору</small>
+              <b>
+                {String(
+                  auth.tokenParsed?.name ??
+                    auth.tokenParsed?.preferred_username ??
+                    "Користувач",
+                )}
+              </b>
+              <small>{role ?? "Учасник"}</small>
             </span>
             <span>⋮</span>
           </button>
@@ -376,7 +451,15 @@ function BoardApp({
             <button className="round-button" aria-label="Сповіщення">
               ♢<i />
             </button>
-            <button className="avatar avatar--header">DT</button>
+            <button
+              className="avatar avatar--header"
+              onClick={() =>
+                void auth.logout({ redirectUri: window.location.origin })
+              }
+              title="Вийти"
+            >
+              ↪
+            </button>
           </div>
         </header>
 
@@ -390,18 +473,28 @@ function BoardApp({
               </p>
             </div>
             <div className="heading-actions">
+              {canManage && (
+                <button
+                  className="secondary-button"
+                  onClick={() => setInviteOpen(true)}
+                >
+                  ＋ Учасник
+                </button>
+              )}
               <button
                 className="secondary-button"
                 onClick={() => void refresh()}
               >
                 ↻ Оновити
               </button>
-              <button
-                className="primary-button primary-button--compact"
-                onClick={() => setNewTaskOpen(true)}
-              >
-                ＋ Нова задача
-              </button>
+              {canWrite && (
+                <button
+                  className="primary-button primary-button--compact"
+                  onClick={() => setNewTaskOpen(true)}
+                >
+                  ＋ Нова задача
+                </button>
+              )}
             </div>
           </div>
 
@@ -439,7 +532,40 @@ function BoardApp({
             </div>
           )}
 
-          {newTaskOpen && (
+          {inviteOpen && (
+            <form className="invite-form" onSubmit={submitInvite}>
+              <label>Додати учасника, який уже увійшов хоча б раз</label>
+              <input
+                type="email"
+                placeholder="member@tessera.local"
+                value={inviteEmail}
+                onChange={(event) => setInviteEmail(event.target.value)}
+                required
+              />
+              <select
+                value={inviteRole}
+                onChange={(event) =>
+                  setInviteRole(event.target.value as typeof inviteRole)
+                }
+              >
+                <option value="ADMIN">Адмін</option>
+                <option value="MEMBER">Учасник</option>
+                <option value="VIEWER">Переглядач</option>
+              </select>
+              <button className="primary-button primary-button--compact">
+                Додати
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setInviteOpen(false)}
+              >
+                Скасувати
+              </button>
+            </form>
+          )}
+
+          {canWrite && newTaskOpen && (
             <form className="new-task-form" onSubmit={submitTask}>
               <div>
                 <span className="form-icon">＋</span>
@@ -524,11 +650,13 @@ function BoardApp({
                         task={task}
                         moving={movingTask === task.taskId}
                         onMove={handleMove}
+                        canWrite={canWrite}
                       />
                     ))}
                     {column.tasks.length === 0 && (
                       <button
                         className="empty-column"
+                        disabled={!canWrite}
                         onClick={() =>
                           column.status === "PLANNED" && setNewTaskOpen(true)
                         }
@@ -557,7 +685,7 @@ function App() {
   const [session, setSession] = useState<Session | null>(() => loadSession());
 
   function saveSession(next: Session) {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+    localStorage.setItem(sessionKey(), JSON.stringify(next));
     setSession(next);
   }
 
@@ -567,10 +695,29 @@ function App() {
         "Від’єднати локальний проєкт від цього браузера? Дані у PostgreSQL залишаться.",
       )
     ) {
-      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(sessionKey());
       setSession(null);
     }
   }
+
+  if (!auth.authenticated)
+    return (
+      <main className="login-screen">
+        <div className="brand brand--large">
+          <span className="brand-mark">T</span>
+          <span>Tessera</span>
+        </div>
+        <p className="kicker">Захищений робочий простір</p>
+        <h1>Твоя команда. Твій простір. Твій прогрес.</h1>
+        <p>Увійдіть через Keycloak, щоб працювати з проєктами та задачами.</p>
+        <button
+          className="primary-button primary-button--compact"
+          onClick={() => void auth.login()}
+        >
+          Увійти
+        </button>
+      </main>
+    );
 
   return session ? (
     <BoardApp session={session} onReset={resetSession} />

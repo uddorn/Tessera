@@ -6,6 +6,7 @@ import type {
   ProjectDto,
   WorkspaceDto,
 } from "@tessera/shared";
+import { accessToken } from "./auth";
 
 export type TaskStatus = PersistedTaskDto["status"];
 
@@ -28,10 +29,12 @@ export interface BoardDto {
 const API_URL = import.meta.env.VITE_API_URL ?? "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await accessToken();
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
       ...init?.headers,
     },
   });
@@ -47,6 +50,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+export function listWorkspaces() {
+  return request<WorkspaceDto[]>("/workspaces");
+}
+
+export function listProjects(workspaceId: string) {
+  return request<ProjectDto[]>(`/workspaces/${workspaceId}/projects`);
+}
+
+export function myProjectRole(projectId: string) {
+  return request<{ role: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER" }>(
+    `/projects/${projectId}/my-role`,
+  );
+}
+
+export function addProjectMember(
+  projectId: string,
+  email: string,
+  role: "ADMIN" | "MEMBER" | "VIEWER",
+) {
+  return request<{ email: string; role: string }>(
+    `/projects/${projectId}/members`,
+    {
+      method: "POST",
+      body: JSON.stringify({ email, role }),
+    },
+  );
 }
 
 export function createWorkspace(command: CreateWorkspaceCommand) {

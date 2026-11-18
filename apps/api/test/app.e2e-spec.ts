@@ -4,6 +4,7 @@ import {
   StandardSchemaValidationPipe,
 } from '@nestjs/common';
 import { getDrizzleToken } from '@nestjs/drizzle';
+import { APP_GUARD } from '@nestjs/core';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
@@ -11,7 +12,11 @@ import type { App } from 'supertest/types.js';
 import { AppModule } from '../src/app.module.js';
 import { ApplicationErrorFilter } from '../src/boundary/http/application-error.filter.js';
 import type { Database } from '../src/infrastructure/database/database.js';
-import { workspaces } from '../src/infrastructure/database/schema.js';
+import {
+  projectMemberships,
+  users,
+  workspaces,
+} from '../src/infrastructure/database/schema.js';
 
 describe('Sprint 2 persistence (e2e)', () => {
   let app: INestApplication<App>;
@@ -19,13 +24,38 @@ describe('Sprint 2 persistence (e2e)', () => {
   let workspaceId: string;
   let projectId: string;
   let taskId: string;
+  const userId = randomUUID();
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(APP_GUARD)
+      .useValue({
+        canActivate: (context: {
+          switchToHttp: () => { getRequest: () => { user: unknown } };
+        }) => {
+          context.switchToHttp().getRequest().user = {
+            id: userId,
+            subject: 'e2e',
+            email: 'e2e@tessera.local',
+            displayName: 'E2E',
+          };
+          return true;
+        },
+      })
+      .compile();
 
     database = moduleFixture.get<Database>(getDrizzleToken());
+    await database
+      .insert(users)
+      .values({
+        id: userId,
+        keycloakSubject: `e2e-${userId}`,
+        email: `${userId}@test.local`,
+        displayName: 'E2E Tester',
+        handle: `e2e-${userId}`,
+      });
     app = moduleFixture.createNestApplication();
     app.useGlobalPipes(new StandardSchemaValidationPipe());
     app.useGlobalFilters(new ApplicationErrorFilter());
@@ -160,13 +190,32 @@ describe('Sprint 2 persistence (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/api/workspaces/${randomUUID()}/projects`)
       .send({ code: 'NEW', name: 'Missing workspace' })
-      .expect(404);
+      .expect(403);
+  });
+
+  it('denies a viewer task writes while allowing board reads', async () => {
+    await database
+      .update(projectMemberships)
+      .set({ role: 'VIEWER' })
+      .where(eq(projectMemberships.projectId, projectId));
+    await request(app.getHttpServer())
+      .get(`/api/projects/${projectId}/board`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/api/projects/${projectId}/tasks`)
+      .send({ title: 'Forbidden' })
+      .expect(403);
+    await database
+      .update(projectMemberships)
+      .set({ role: 'OWNER' })
+      .where(eq(projectMemberships.projectId, projectId));
   });
 
   afterAll(async () => {
     if (workspaceId) {
       await database.delete(workspaces).where(eq(workspaces.id, workspaceId));
     }
+    await database.delete(users).where(eq(users.id, userId));
     await app.close();
   });
 });

@@ -3,6 +3,7 @@ import {
   StandardSchemaValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { AuthService } from '../../../auth/auth.service.js';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import { PROJECT_REPOSITORY } from '../application/project.repository.js';
@@ -18,6 +19,13 @@ describe('ProjectsController validation boundary', () => {
     createTask: vi.fn(),
     listTasks: vi.fn(),
   };
+  const user = {
+    id: '13708ac3-340a-405f-a700-6c0e89fe0632',
+    subject: 'test-subject',
+    email: 'test@example.com',
+    displayName: 'Tester',
+  };
+  const auth = { requireWorkspace: vi.fn().mockResolvedValue('OWNER') };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -25,10 +33,15 @@ describe('ProjectsController validation boundary', () => {
       providers: [
         ProjectsService,
         { provide: PROJECT_REPOSITORY, useValue: repository },
+        { provide: AuthService, useValue: auth },
       ],
     }).compile();
 
     app = moduleRef.createNestApplication();
+    app.use((req: { user: typeof user }, _res: unknown, next: () => void) => {
+      req.user = user;
+      next();
+    });
     app.useGlobalPipes(new StandardSchemaValidationPipe());
     await app.init();
   });
@@ -63,11 +76,15 @@ describe('ProjectsController validation boundary', () => {
       .send({ code: 'tes', name: 'Tessera' })
       .expect(201);
 
-    expect(repository.createProject).toHaveBeenCalledWith(workspaceId, {
-      code: 'TES',
-      name: 'Tessera',
-      description: '',
-    });
+    expect(repository.createProject).toHaveBeenCalledWith(
+      workspaceId,
+      {
+        code: 'TES',
+        name: 'Tessera',
+        description: '',
+      },
+      user.id,
+    );
   });
 
   afterAll(async () => {

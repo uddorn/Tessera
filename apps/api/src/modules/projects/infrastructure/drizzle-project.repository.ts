@@ -16,9 +16,11 @@ import { hasPostgresErrorCode } from '../../../infrastructure/database/postgres-
 import {
   boardColumns,
   boards,
+  projectMemberships,
   projects,
   tasks,
   workspaces,
+  workspaceMemberships,
   type ProjectRow,
   type TaskRow,
   type WorkspaceRow,
@@ -90,14 +92,19 @@ export class DrizzleProjectRepository implements ProjectRepository {
 
   async createWorkspace(
     command: CreateWorkspaceCommand,
+    ownerId: string,
   ): Promise<WorkspaceDto> {
     try {
-      const [created] = await this.db
-        .insert(workspaces)
-        .values(command)
-        .returning();
-
-      return toWorkspaceDto(created);
+      return await this.db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(workspaces)
+          .values(command)
+          .returning();
+        await tx
+          .insert(workspaceMemberships)
+          .values({ workspaceId: created.id, userId: ownerId, role: 'OWNER' });
+        return toWorkspaceDto(created);
+      });
     } catch (error) {
       if (hasPostgresErrorCode(error, '23505')) {
         throw new ResourceConflictError(
@@ -108,9 +115,22 @@ export class DrizzleProjectRepository implements ProjectRepository {
     }
   }
 
+  async listWorkspaces(userId: string): Promise<WorkspaceDto[]> {
+    const rows = await this.db
+      .select({ workspace: workspaces })
+      .from(workspaceMemberships)
+      .innerJoin(
+        workspaces,
+        eq(workspaceMemberships.workspaceId, workspaces.id),
+      )
+      .where(eq(workspaceMemberships.userId, userId));
+    return rows.map(({ workspace }) => toWorkspaceDto(workspace));
+  }
+
   async createProject(
     workspaceId: string,
     command: CreateProjectCommand,
+    ownerId: string,
   ): Promise<ProjectDto> {
     try {
       return await this.db.transaction(async (tx) => {
@@ -133,6 +153,14 @@ export class DrizzleProjectRepository implements ProjectRepository {
             ...column,
           })),
         );
+
+        await tx
+          .insert(projectMemberships)
+          .values({
+            projectId: createdProject.id,
+            userId: ownerId,
+            role: 'OWNER',
+          });
 
         return toProjectDto(createdProject);
       });

@@ -7,6 +7,7 @@ import {
   Param,
   Post,
   Patch,
+  Req,
 } from '@nestjs/common';
 import {
   createProjectSchema,
@@ -19,6 +20,8 @@ import {
   type CreateTaskCommand,
   type CreateWorkspaceCommand,
 } from '@tessera/shared';
+import { z } from 'zod';
+import type { AuthenticatedRequest } from '../../../auth/auth.types.js';
 import { ProjectsService } from '../application/projects.service.js';
 
 @Controller()
@@ -29,8 +32,14 @@ export class ProjectsController {
   @HttpCode(HttpStatus.CREATED)
   createWorkspace(
     @Body({ schema: createWorkspaceSchema }) command: CreateWorkspaceCommand,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.createWorkspace(command);
+    return this.projectsService.createWorkspace(command, request.user);
+  }
+
+  @Get('workspaces')
+  listWorkspaces(@Req() request: AuthenticatedRequest) {
+    return this.projectsService.listWorkspaces(request.user);
   }
 
   @Post('workspaces/:workspaceId/projects')
@@ -38,15 +47,21 @@ export class ProjectsController {
   createProject(
     @Param('workspaceId', { schema: resourceIdSchema }) workspaceId: string,
     @Body({ schema: createProjectSchema }) command: CreateProjectCommand,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.createProject(workspaceId, command);
+    return this.projectsService.createProject(
+      workspaceId,
+      command,
+      request.user,
+    );
   }
 
   @Get('workspaces/:workspaceId/projects')
   listProjects(
     @Param('workspaceId', { schema: resourceIdSchema }) workspaceId: string,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.listProjects(workspaceId);
+    return this.projectsService.listProjects(workspaceId, request.user);
   }
 
   @Post('projects/:projectId/tasks')
@@ -54,22 +69,25 @@ export class ProjectsController {
   createTask(
     @Param('projectId', { schema: resourceIdSchema }) projectId: string,
     @Body({ schema: createTaskSchema }) command: CreateTaskCommand,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.createTask(projectId, command);
+    return this.projectsService.createTask(projectId, command, request.user);
   }
 
   @Get('projects/:projectId/tasks')
   listTasks(
     @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.listTasks(projectId);
+    return this.projectsService.listTasks(projectId, request.user);
   }
 
   @Get('projects/:projectId/board')
   getBoard(
     @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.getBoard(projectId);
+    return this.projectsService.getBoard(projectId, request.user);
   }
 
   @Patch('tasks/:taskId/status')
@@ -77,7 +95,36 @@ export class ProjectsController {
     @Param('taskId', { schema: resourceIdSchema }) taskId: string,
     @Body({ schema: movePersistedTaskSchema })
     command: MovePersistedTaskCommand,
+    @Req() request: AuthenticatedRequest,
   ) {
-    return this.projectsService.moveTask(taskId, command);
+    return this.projectsService.moveTask(taskId, command, request.user);
+  }
+
+  @Get('projects/:projectId/my-role')
+  myRole(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.myProjectRole(projectId, request.user);
+  }
+
+  @Post('projects/:projectId/members')
+  addMember(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Body({
+      schema: z.strictObject({
+        email: z.email(),
+        role: z.enum(['ADMIN', 'MEMBER', 'VIEWER']),
+      }),
+    })
+    command: { email: string; role: 'ADMIN' | 'MEMBER' | 'VIEWER' },
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.addMember(
+      projectId,
+      command.email,
+      command.role,
+      request.user,
+    );
   }
 }

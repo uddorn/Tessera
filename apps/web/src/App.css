@@ -420,10 +420,9 @@ button:disabled {
 }
 .new-task-form {
   display: grid;
-  grid-template-columns: minmax(190px, 0.8fr) minmax(
-      260px,
-      1.6fr
-    ) 130px 64px auto 30px;
+  grid-template-columns:
+    minmax(190px, 0.8fr) minmax(260px, 1.6fr)
+    130px 64px auto 30px;
   align-items: center;
   gap: 10px;
   margin-top: 16px;
@@ -914,4 +913,69 @@ button:disabled {
     margin: auto;
     padding: 28px;
   }
+}
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vw;
+  background:
+    radial-gradient(circle at 10% 10%, #e4f4ed, transparent 50%), #f6f7f4;
+}
+.login-screen h1 {
+  max-width: 750px;
+  font-family: Georgia, serif;
+  font-size: clamp(42px, 7vw, 80px);
+  font-weight: 500;
+  line-height: 1.02;
+}
+.login-screen p:not(.kicker) {
+  color: #768078;
+}
+.auth-error {
+  padding: 50px;
+}
+.existing-projects {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+  padding: 10px 0;
+  border-top: 1px solid #e6e9e4;
+}
+.existing-projects p {
+  margin: 0;
+  color: #768078;
+  font-size: 12px;
+}
+.existing-projects button {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid #e6e9e4;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+}
+.invite-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #e6e9e4;
+  border-radius: 10px;
+  background: white;
+}
+.invite-form label {
+  width: 100%;
+  font-size: 12px;
+}
+.invite-form input,
+.invite-form select {
+  padding: 9px;
+  border: 1px solid #e6e9e4;
+  border-radius: 7px;
 }

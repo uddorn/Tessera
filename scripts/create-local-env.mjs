@@ -28,6 +28,10 @@ VALKEY_URL=redis://:${valkeyPassword}@localhost:6379
 KEYCLOAK_ADMIN=admin
 KEYCLOAK_ADMIN_PASSWORD=${keycloakPassword}
 KEYCLOAK_ISSUER=http://localhost:8080/realms/tessera
+KEYCLOAK_CLIENT_ID=tessera-web
+TESSERA_DEMO_OWNER_PASSWORD=${randomBase64Url()}
+TESSERA_DEMO_MEMBER_PASSWORD=${randomBase64Url()}
+TESSERA_DEMO_VIEWER_PASSWORD=${randomBase64Url()}
 
 GARAGE_RPC_SECRET=${randomHex(32)}
 GARAGE_ADMIN_TOKEN=${randomBase64Url(32)}
