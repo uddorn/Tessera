@@ -4,7 +4,7 @@ import {
   StandardSchemaValidationPipe,
 } from '@nestjs/common';
 import { getDrizzleToken } from '@nestjs/drizzle';
-import { APP_GUARD } from '@nestjs/core';
+import { AuthGuard } from '../src/auth/auth.guard.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
@@ -30,7 +30,7 @@ describe('Sprint 2 persistence (e2e)', () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
-      .overrideProvider(APP_GUARD)
+      .overrideProvider(AuthGuard)
       .useValue({
         canActivate: (context: {
           switchToHttp: () => { getRequest: () => { user: unknown } };
@@ -47,15 +47,13 @@ describe('Sprint 2 persistence (e2e)', () => {
       .compile();
 
     database = moduleFixture.get<Database>(getDrizzleToken());
-    await database
-      .insert(users)
-      .values({
-        id: userId,
-        keycloakSubject: `e2e-${userId}`,
-        email: `${userId}@test.local`,
-        displayName: 'E2E Tester',
-        handle: `e2e-${userId}`,
-      });
+    await database.insert(users).values({
+      id: userId,
+      keycloakSubject: `e2e-${userId}`,
+      email: `${userId}@test.local`,
+      displayName: 'E2E Tester',
+      handle: `e2e-${userId}`,
+    });
     app = moduleFixture.createNestApplication();
     app.useGlobalPipes(new StandardSchemaValidationPipe());
     app.useGlobalFilters(new ApplicationErrorFilter());
