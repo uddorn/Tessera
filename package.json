@@ -23,6 +23,7 @@
     "format:check": "prettier --check .",
     "infra:env": "node scripts/create-local-env.mjs",
     "auth:env": "node scripts/ensure-auth-env.mjs",
+    "auth:check": "node scripts/verify-auth.mjs",
     "db:generate": "pnpm --filter @tessera/api db:generate",
     "db:migrate": "pnpm --filter @tessera/api db:migrate",
     "db:check": "pnpm --filter @tessera/api db:check",
