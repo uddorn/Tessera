@@ -13,7 +13,7 @@ export class AppService {
     return {
       status: 'ok',
       service: '@tessera/api',
-      sprint: 2,
+      sprint: 3,
       database: 'up',
       timestamp: new Date().toISOString(),
     };

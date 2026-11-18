@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="Sprint 2 verified" src="https://img.shields.io/badge/Sprint_2-verified-00c853?style=for-the-badge" />
+  <img alt="Sprint 3 verified" src="https://img.shields.io/badge/Sprint_3-verified-00c853?style=for-the-badge" />
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@ Tessera evolves a coursework architectural MVP into a bachelor-level product wit
 
 ## What is working now
 
-- React 19 boundary application powered by Vite;
+- interactive React 19 Kanban board with workspace setup and task transitions;
 - NestJS 12 API with health, architecture, workspace, project, and task endpoints;
 - shared Zod schemas, DTOs, and domain-event contracts;
 - domain rules for WIP limits and task state transitions;
@@ -29,7 +29,9 @@ Tessera evolves a coursework architectural MVP into a bachelor-level product wit
 - PostgreSQL persistence through Drizzle ORM with versioned migrations;
 - transactional project setup with a Kanban board and four default columns;
 - sequential task keys and database-backed conflict/not-found handling;
-- thirteen passing automated tests plus lint, typecheck, and production builds;
+- Keycloak OIDC login, signed access-token verification, and project role checks;
+- workspace/project membership persisted in PostgreSQL;
+- automated unit and E2E tests plus lint, typecheck, and production builds;
 - five healthy Docker services with persistent data and loopback-only ports.
 
 ## Architecture
@@ -51,11 +53,12 @@ flowchart LR
     API -->|Drizzle ORM · migrations| PostgreSQL
     API -. cache and queues .-> Valkey
     API -. attachments .-> Garage
-    API -. OIDC and RBAC .-> Keycloak
+    Web -->|OIDC code flow + PKCE| Keycloak
+    API -->|JWT signature via JWKS| Keycloak
     API -. notifications .-> Mailpit
 ```
 
-PostgreSQL is now part of a complete application vertical slice. Dashed connections identify integrations scheduled for future sprints.
+PostgreSQL and Keycloak now form an authenticated application slice. Dashed connections identify integrations scheduled for future sprints.
 
 ## Persistence vertical slice
 
@@ -69,7 +72,20 @@ Sprint 2 connects the application core to PostgreSQL without leaking ORM details
 | `POST` | `/api/projects/:projectId/tasks`        | Creates a task with a sequential key such as TES-1 |
 | `GET`  | `/api/projects/:projectId/tasks`        | Lists persisted project tasks                      |
 
-The initial migration creates seven constrained tables: `users`, `workspaces`, `projects`, `project_memberships`, `boards`, `board_columns`, and `tasks`. E2E tests run against the real containerized database and remove their fixtures afterward.
+The initial migration creates seven constrained tables; Sprint 3 adds `workspace_memberships`. E2E tests run against the real containerized database and remove their fixtures afterward.
+
+## Identity and project roles
+
+The `tessera` realm is imported from `infra/keycloak/tessera-realm.json` on first Keycloak startup. The browser uses Authorization Code + PKCE. The API validates JWT signature, issuer, expiry, algorithm and the authorized client (`azp`) against Keycloak's JWKS. Roles are stored per project in PostgreSQL; a role embedded in a token never grants project access by itself.
+
+| Role   | Read board | Create/move tasks | Create projects / add members |
+| ------ | ---------- | ----------------- | ----------------------------- |
+| OWNER  | Yes        | Yes               | Yes                           |
+| ADMIN  | Yes        | Yes               | Yes                           |
+| MEMBER | Yes        | Yes               | No                            |
+| VIEWER | Yes        | No                | No                            |
+
+The creator owns each new workspace and project. An owner or admin can add a user by email after that user signs in once. Older projects made before Sprint 3 have no owner assigned; they are intentionally not exposed to a newly authenticated account.
 
 ## Verified infrastructure
 
@@ -113,6 +129,7 @@ Generate unique local secrets. The command deliberately refuses to overwrite an 
 
 ```bash
 pnpm infra:env
+pnpm auth:env # for an existing .env; adds only missing local demo passwords
 ```
 
 Start the complete stack and wait for its health checks:
@@ -121,6 +138,7 @@ Start the complete stack and wait for its health checks:
 sudo docker compose up -d --wait --wait-timeout 240
 sudo docker compose ps
 pnpm db:migrate
+pnpm dev
 ```
 
 Useful verification commands:
@@ -143,6 +161,10 @@ sudo docker compose stop
 
 > [!CAUTION]
 > `docker compose down --volumes` permanently deletes the local databases, object storage, cache, and captured mail.
+
+Open <http://localhost:5173> and select **Увійти**. The local demo usernames are `tessera-owner`, `tessera-member`, and `tessera-viewer`; their distinct passwords are in the gitignored `.env` (`TESSERA_DEMO_*_PASSWORD`). They are separate accounts, not automatic project members. Sign in once with each account, then use **＋ Учасник** as the project owner to add the member/viewer by email. Demo credentials are for localhost development only.
+
+Keycloak startup import skips an existing `tessera` realm; editing its JSON later does not overwrite user data. Existing projects remain preserved in PostgreSQL.
 
 ## Security-minded development defaults
 
@@ -188,16 +210,16 @@ compose.yaml
   <img alt="Roadmap progress: 3 of 6 milestones complete" src="https://img.shields.io/badge/Roadmap-3_of_6_milestones_complete-00c853?style=for-the-badge" />
 </p>
 
-| Status    | Milestone                         | Outcome                                                          |
-| --------- | --------------------------------- | ---------------------------------------------------------------- |
-| ✅ Done   | **Sprint 1A · Architecture**      | Monorepo, domain core, shared contracts, and design patterns     |
-| ✅ Done   | **Sprint 1B · Infrastructure**    | Reproducible, secure, and fully verified self-hosted stack       |
-| ✅ Done   | **Sprint 2 · Persistence**        | PostgreSQL integration, ORM schema, migrations, and repositories |
-| 🎯 Next   | **Sprint 3 · Identity**           | Keycloak OIDC authentication and role-based access control       |
-| ◌ Planned | **Sprint 4 · Platform Services**  | S3 attachments, audit history, and notification delivery         |
-| ◌ Planned | **Sprint 5 · Product Experience** | Kanban UI, accessibility, and real-time collaboration            |
+| Status    | Milestone                         | Outcome                                                            |
+| --------- | --------------------------------- | ------------------------------------------------------------------ |
+| ✅ Done   | **Sprint 1A · Architecture**      | Monorepo, domain core, shared contracts, and design patterns       |
+| ✅ Done   | **Sprint 1B · Infrastructure**    | Reproducible, secure, and fully verified self-hosted stack         |
+| ✅ Done   | **Sprint 2 · Persistence**        | PostgreSQL integration, ORM schema, migrations, and repositories   |
+| ✅ Done   | **Sprint 3 · Identity**           | Keycloak OIDC authentication and role-based access control         |
+| ◌ Planned | **Sprint 4 · Platform Services**  | S3 attachments, audit history, and notification delivery           |
+| ◌ Planned | **Sprint 5 · Product Experience** | Kanban UI enhancements, accessibility, and real-time collaboration |
 
-**Current focus:** Sprint 3 will connect Keycloak to the verified persistence slice and enforce workspace roles at the API boundary.
+**Current focus:** Sprint 4 adds attachments, audit history, and notifications to the authenticated Kanban slice.
 
 ---
 

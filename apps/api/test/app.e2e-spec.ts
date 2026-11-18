@@ -68,7 +68,7 @@ describe('Sprint 2 persistence (e2e)', () => {
       .expect(({ body }) => {
         expect(body).toMatchObject({
           status: 'ok',
-          sprint: 2,
+          sprint: 3,
           database: 'up',
         });
       });
@@ -171,7 +171,7 @@ describe('Sprint 2 persistence (e2e)', () => {
     expect(updated.body.columns[1].tasks).toHaveLength(1);
     await request(app.getHttpServer())
       .get(`/api/projects/${randomUUID()}/board`)
-      .expect(404);
+      .expect(403);
   });
 
   it('rejects invalid payloads, duplicate codes and missing parents', async () => {
