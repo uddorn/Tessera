@@ -9,14 +9,28 @@
     "pnpm": ">=11"
   },
   "scripts": {
+    "shared:build": "pnpm --filter @tessera/shared build",
+    "predev": "pnpm shared:build",
     "dev": "pnpm --parallel --filter @tessera/api --filter @tessera/web dev",
     "build": "pnpm -r build",
+    "pretypecheck": "pnpm shared:build",
     "typecheck": "pnpm -r typecheck",
+    "pretest": "pnpm shared:build",
     "test": "pnpm -r test",
+    "prelint": "pnpm shared:build",
     "lint": "pnpm -r lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "infra:env": "node scripts/create-local-env.mjs"
+    "infra:env": "node scripts/create-local-env.mjs",
+    "auth:env": "node scripts/ensure-auth-env.mjs",
+    "auth:check": "node scripts/verify-auth.mjs",
+    "auth:theme": "node scripts/verify-auth.mjs --apply-theme",
+    "db:generate": "pnpm --filter @tessera/api db:generate",
+    "db:migrate": "pnpm --filter @tessera/api db:migrate",
+    "db:check": "pnpm --filter @tessera/api db:check",
+    "test:e2e": "pnpm --filter @tessera/api test:e2e",
+    "security:scan": "npx --yes @openai/codex-security scan . --path apps/api --path apps/web --path infra --exclude-path node_modules --exclude-path dist",
+    "web:modern-check": "npx --yes modern-web-guidance@latest legacy-scan apps/web"
   },
   "devDependencies": {
     "prettier": "^3.6.2",

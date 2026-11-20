@@ -8,10 +8,14 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "typecheck": "tsc -b --pretty false",
-    "test": "node -e \"console.log('Web tests start in Sprint 5')\"",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@tessera/shared": "workspace:*",
+    "keycloak-js": "^26.2.5",
+    "motion": "^14.14.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

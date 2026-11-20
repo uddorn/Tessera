@@ -1,0 +1,80 @@
+{
+  "realm": "tessera",
+  "enabled": true,
+  "displayName": "Tessera",
+  "loginTheme": "tessera",
+  "internationalizationEnabled": true,
+  "supportedLocales": ["uk"],
+  "defaultLocale": "uk",
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "OWNER" },
+      { "name": "ADMIN" },
+      { "name": "MEMBER" },
+      { "name": "VIEWER" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "tessera-web",
+      "name": "Tessera Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "webOrigins": ["http://localhost:5173", "http://127.0.0.1:5173"]
+    }
+  ],
+  "users": [
+    {
+      "username": "tessera-owner",
+      "email": "owner@tessera.local",
+      "firstName": "Tessera",
+      "lastName": "Owner",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TESSERA_DEMO_OWNER_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "tessera-member",
+      "email": "member@tessera.local",
+      "firstName": "Tessera",
+      "lastName": "Member",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TESSERA_DEMO_MEMBER_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "tessera-viewer",
+      "email": "viewer@tessera.local",
+      "firstName": "Tessera",
+      "lastName": "Viewer",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TESSERA_DEMO_VIEWER_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}
