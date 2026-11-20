@@ -4,9 +4,13 @@ export class WipLimitViolation extends Error {}
 
 export class WipLimitPolicy {
   assertCanAccept(target: BoardColumn): void {
-    if (target.tasks.length >= target.wipLimit) {
+    this.assertCapacity(target.tasks.length, target.wipLimit, target.title);
+  }
+
+  assertCapacity(count: number, limit: number, title: string): void {
+    if (count >= limit) {
       throw new WipLimitViolation(
-        `WIP limit reached for ${target.title}: ${target.tasks.length}/${target.wipLimit}`,
+        `WIP limit reached for ${title}: ${count}/${limit}`,
       );
     }
   }

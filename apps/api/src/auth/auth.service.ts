@@ -6,12 +6,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectDrizzle } from '@nestjs/drizzle';
 import type { ProjectRole } from '@tessera/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { Database } from '../infrastructure/database/database.js';
 import {
   projectMemberships,
   projects,
+  taskActivity,
   tasks,
   users,
   workspaceMemberships,
@@ -163,32 +164,122 @@ export class AuthService {
       .where(eq(users.email, email.toLowerCase()));
     if (!user)
       throw new NotFoundException('User must sign in once before being added');
-    const [existing] = await this.db
-      .select({ role: projectMemberships.role })
+    return this.db.transaction(async (tx) => {
+      const [project] = await tx
+        .select({ workspaceId: projects.workspaceId })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .for('update');
+      if (!project) throw new NotFoundException('Project not found');
+      const [existing] = await tx
+        .select({ role: projectMemberships.role })
+        .from(projectMemberships)
+        .where(
+          and(
+            eq(projectMemberships.projectId, projectId),
+            eq(projectMemberships.userId, user.id),
+          ),
+        );
+      if (existing?.role === 'OWNER')
+        throw new ForbiddenException('Owner role cannot be changed');
+      await tx
+        .insert(projectMemberships)
+        .values({ projectId, userId: user.id, role })
+        .onConflictDoUpdate({
+          target: [projectMemberships.projectId, projectMemberships.userId],
+          set: { role },
+        });
+      await tx
+        .insert(workspaceMemberships)
+        .values({
+          workspaceId: project.workspaceId,
+          userId: user.id,
+          role: 'VIEWER',
+        })
+        .onConflictDoNothing();
+      return { email, role };
+    });
+  }
+
+  async listProjectMembers(projectId: string) {
+    return this.db
+      .select({
+        userId: users.id,
+        displayName: users.displayName,
+        email: users.email,
+        role: projectMemberships.role,
+      })
       .from(projectMemberships)
-      .where(
-        and(
-          eq(projectMemberships.projectId, projectId),
-          eq(projectMemberships.userId, user.id),
-        ),
+      .innerJoin(users, eq(projectMemberships.userId, users.id))
+      .where(eq(projectMemberships.projectId, projectId))
+      .orderBy(asc(users.displayName), asc(users.id));
+  }
+
+  async removeProjectMember(
+    projectId: string,
+    memberId: string,
+    actorId: string,
+    actorName: string,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const [project] = await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .for('update');
+      if (!project) throw new NotFoundException('Project not found');
+      const memberships = await tx
+        .select({
+          userId: projectMemberships.userId,
+          role: projectMemberships.role,
+        })
+        .from(projectMemberships)
+        .where(eq(projectMemberships.projectId, projectId));
+      const actor = memberships.find(
+        (membership) => membership.userId === actorId,
       );
-    if (existing?.role === 'OWNER')
-      throw new ForbiddenException('Owner role cannot be changed');
-    await this.db
-      .insert(projectMemberships)
-      .values({ projectId, userId: user.id, role })
-      .onConflictDoUpdate({
-        target: [projectMemberships.projectId, projectMemberships.userId],
-        set: { role },
-      });
-    const [project] = await this.db
-      .select({ workspaceId: projects.workspaceId })
-      .from(projects)
-      .where(eq(projects.id, projectId));
-    await this.db
-      .insert(workspaceMemberships)
-      .values({ workspaceId: project.workspaceId, userId: user.id, role })
-      .onConflictDoNothing();
-    return { email, role };
+      const target = memberships.find(
+        (membership) => membership.userId === memberId,
+      );
+      if (!actor || !permits(actor.role, 'member:write'))
+        throw new ForbiddenException('Insufficient project role');
+      if (!target) throw new NotFoundException('Project member not found');
+      if (
+        target.role === 'OWNER' ||
+        actorId === memberId ||
+        (actor.role !== 'OWNER' && target.role === 'ADMIN')
+      )
+        throw new ForbiddenException('Cannot remove this project member');
+      const unassigned = await tx
+        .update(tasks)
+        .set({
+          assigneeId: null,
+          version: sql`${tasks.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(tasks.projectId, projectId), eq(tasks.assigneeId, memberId)),
+        )
+        .returning({ taskKey: tasks.taskKey });
+      if (unassigned.length) {
+        await tx.insert(taskActivity).values(
+          unassigned.map(({ taskKey }) => ({
+            projectId,
+            taskKey,
+            actor: actorName,
+            kind: 'UPDATED' as const,
+          })),
+        );
+      }
+      await tx
+        .delete(projectMemberships)
+        .where(
+          and(
+            eq(projectMemberships.projectId, projectId),
+            eq(projectMemberships.userId, memberId),
+          ),
+        );
+      return { removed: true as const };
+    });
   }
 }

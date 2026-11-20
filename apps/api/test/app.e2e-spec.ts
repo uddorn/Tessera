@@ -18,7 +18,7 @@ import {
   workspaces,
 } from '../src/infrastructure/database/schema.js';
 
-describe('Sprint 2 persistence (e2e)', () => {
+describe('Coursework Kanban (e2e)', () => {
   let app: INestApplication<App>;
   let database: Database;
   let workspaceId: string;
@@ -152,14 +152,14 @@ describe('Sprint 2 persistence (e2e)', () => {
     expect(board.body.columns[0].tasks).toHaveLength(2);
     await request(app.getHttpServer())
       .patch(`/api/tasks/${taskId}/status`)
-      .send({ targetStatus: 'DONE', expectedVersion: 1 })
+      .send({ targetStatus: 'PLANNED', expectedVersion: 1 })
       .expect(409);
     await request(app.getHttpServer())
       .patch(`/api/tasks/${taskId}/status`)
-      .send({ targetStatus: 'IN_PROGRESS', expectedVersion: 1 })
+      .send({ targetStatus: 'DONE', expectedVersion: 1 })
       .expect(200)
       .expect(({ body }) => {
-        expect(body).toMatchObject({ status: 'IN_PROGRESS', version: 2 });
+        expect(body).toMatchObject({ status: 'DONE', version: 2 });
       });
     await request(app.getHttpServer())
       .patch(`/api/tasks/${taskId}/status`)
@@ -168,7 +168,7 @@ describe('Sprint 2 persistence (e2e)', () => {
     const updated = await request(app.getHttpServer())
       .get(`/api/projects/${projectId}/board`)
       .expect(200);
-    expect(updated.body.columns[1].tasks).toHaveLength(1);
+    expect(updated.body.columns[3].tasks).toHaveLength(1);
     await request(app.getHttpServer())
       .get(`/api/projects/${randomUUID()}/board`)
       .expect(403);
@@ -203,10 +203,175 @@ describe('Sprint 2 persistence (e2e)', () => {
       .post(`/api/projects/${projectId}/tasks`)
       .send({ title: 'Forbidden' })
       .expect(403);
+    await request(app.getHttpServer())
+      .patch(`/api/tasks/${taskId}`)
+      .send({ title: 'Forbidden', expectedVersion: 2 })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/api/tasks/${taskId}/comments`)
+      .send({ body: 'Forbidden' })
+      .expect(403);
     await database
       .update(projectMemberships)
       .set({ role: 'OWNER' })
       .where(eq(projectMemberships.projectId, projectId));
+  });
+
+  it('persists a task lifecycle with discussion, attachments and audit history', async () => {
+    const api = request(app.getHttpServer());
+    const updated = await api
+      .patch(`/api/tasks/${taskId}`)
+      .send({
+        expectedVersion: 2,
+        description: 'Review the migration',
+        dueDate: '2026-12-01',
+        assigneeId: userId,
+      })
+      .expect(200);
+    expect(updated.body).toMatchObject({
+      version: 3,
+      dueDate: '2026-12-01',
+      assigneeId: userId,
+      priority: 'HIGH',
+      storyPoints: 5,
+    });
+    await api
+      .patch(`/api/tasks/${taskId}`)
+      .send({ expectedVersion: 2, title: 'Stale write' })
+      .expect(409);
+    await api
+      .post(`/api/tasks/${taskId}/comments`)
+      .send({ body: 'Reviewed with the team' })
+      .expect(201);
+    const content = Buffer.from('Fixture file').toString('base64');
+    const { body: attachment } = await api
+      .post(`/api/tasks/${taskId}/attachments`)
+      .send({ name: 'review.txt', content })
+      .expect(201);
+    expect(attachment.sha256).toMatch(/^[a-f0-9]{64}$/);
+    await api
+      .get(`/api/tasks/${taskId}/attachments/${attachment.attachmentId}`)
+      .expect(200, { name: 'review.txt', content });
+    const { body: discussion } = await api
+      .get(`/api/tasks/${taskId}/discussion`)
+      .expect(200);
+    expect(discussion.comments[0].body).toBe('Reviewed with the team');
+    expect(discussion.attachments[0]).toMatchObject({
+      name: 'review.txt',
+      size: 12,
+    });
+    expect(discussion.attachments[0]).not.toHaveProperty('content');
+    await api
+      .delete(`/api/tasks/${taskId}`)
+      .send({ expectedVersion: 2 })
+      .expect(409);
+    await api
+      .delete(`/api/tasks/${taskId}`)
+      .send({ expectedVersion: 3 })
+      .expect(200);
+    await api.get(`/api/tasks/${taskId}/discussion`).expect(404);
+    const { body: activity } = await api
+      .get(`/api/projects/${projectId}/activity`)
+      .expect(200);
+    expect(
+      activity
+        .filter((item: { taskKey: string }) => item.taskKey === 'TES-1')
+        .map((item: { kind: string }) => item.kind),
+    ).toEqual([
+      'DELETED',
+      'ATTACHED',
+      'COMMENTED',
+      'UPDATED',
+      'MOVED',
+      'CREATED',
+    ]);
+  });
+
+  it('prevents concurrent requests from exceeding the column WIP limit', async () => {
+    const api = request(app.getHttpServer());
+    const entries = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        api
+          .post(`/api/projects/${projectId}/tasks`)
+          .send({ title: `WIP test ${index}` })
+          .expect(201),
+      ),
+    );
+    const moves = await Promise.all(
+      entries.map(({ body }) =>
+        api
+          .patch(`/api/tasks/${body.taskId}/status`)
+          .send({ expectedVersion: 1, targetStatus: 'IN_PROGRESS' }),
+      ),
+    );
+    expect(moves.map(({ status }) => status).sort((a, b) => a - b)).toEqual([
+      200, 200, 200, 200, 409,
+    ]);
+    expect(moves.find(({ status }) => status === 409)?.body.message).toBe(
+      'Target column WIP limit reached',
+    );
+  });
+
+  it('removes a member, clears assignments and restricts project deletion to the owner', async () => {
+    const api = request(app.getHttpServer());
+    const memberId = randomUUID();
+    const email = `${memberId}@test.local`;
+    await database.insert(users).values({
+      id: memberId,
+      keycloakSubject: `e2e-${memberId}`,
+      email,
+      displayName: 'Former member',
+      handle: `e2e-${memberId}`,
+    });
+    await api
+      .post(`/api/projects/${projectId}/members`)
+      .send({ email, role: 'MEMBER' })
+      .expect(201);
+    const { body: board } = await api
+      .get(`/api/projects/${projectId}/board`)
+      .expect(200);
+    const assignedTask = board.columns[0].tasks[0];
+    await api
+      .patch(`/api/tasks/${assignedTask.taskId}`)
+      .send({ expectedVersion: assignedTask.version, assigneeId: memberId })
+      .expect(200);
+    await api
+      .delete(`/api/projects/${projectId}/members/${userId}`)
+      .expect(403);
+    await api
+      .delete(`/api/projects/${projectId}/members/${memberId}`)
+      .expect(200, { removed: true });
+    const { body: afterRemoval } = await api
+      .get(`/api/projects/${projectId}/board`)
+      .expect(200);
+    expect(
+      afterRemoval.columns[0].tasks.find(
+        (task: { taskId: string }) => task.taskId === assignedTask.taskId,
+      ).assigneeId,
+    ).toBeNull();
+    expect(
+      afterRemoval.columns[0].tasks.find(
+        (task: { taskId: string }) => task.taskId === assignedTask.taskId,
+      ).version,
+    ).toBe(assignedTask.version + 2);
+    await database.delete(users).where(eq(users.id, memberId));
+
+    await database
+      .update(projectMemberships)
+      .set({ role: 'ADMIN' })
+      .where(eq(projectMemberships.projectId, projectId));
+    await api.delete(`/api/projects/${projectId}`).expect(403);
+    await database
+      .update(projectMemberships)
+      .set({ role: 'OWNER' })
+      .where(eq(projectMemberships.projectId, projectId));
+    await api
+      .delete(`/api/projects/${projectId}`)
+      .expect(200, { deleted: true });
+    const { body: projects } = await api
+      .get(`/api/workspaces/${workspaceId}/projects`)
+      .expect(200);
+    expect(projects).toHaveLength(0);
   });
 
   afterAll(async () => {

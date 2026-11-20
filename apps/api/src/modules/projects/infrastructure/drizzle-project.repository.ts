@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectDrizzle } from '@nestjs/drizzle';
 import type {
   CreateProjectCommand,
@@ -8,9 +9,16 @@ import type {
   ProjectDto,
   WorkspaceDto,
   MovePersistedTaskCommand,
+  UpdateTaskCommand,
+  AttachmentCommand,
 } from '@tessera/shared';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { maxAttachmentBytes } from '@tessera/shared';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { TaskStateContext } from '../../../domain/task-state.pattern.js';
+import {
+  WipLimitPolicy,
+  WipLimitViolation,
+} from '../../../domain/wip-limit.policy.js';
 import type { Database } from '../../../infrastructure/database/database.js';
 import { hasPostgresErrorCode } from '../../../infrastructure/database/postgres-error.js';
 import {
@@ -19,6 +27,9 @@ import {
   projectMemberships,
   projects,
   tasks,
+  taskActivity,
+  taskAttachments,
+  taskComments,
   workspaces,
   workspaceMemberships,
   type ProjectRow,
@@ -77,6 +88,9 @@ function toTaskDto(row: TaskRow): PersistedTaskDto {
     columnId: row.columnId,
     taskKey: row.taskKey,
     title: row.title,
+    description: row.description,
+    dueDate: row.dueDate,
+    assigneeId: row.assigneeId,
     priority: row.priority,
     status: row.status,
     storyPoints: row.storyPoints,
@@ -84,6 +98,76 @@ function toTaskDto(row: TaskRow): PersistedTaskDto {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+async function recordActivity(
+  tx: Transaction,
+  task: TaskRow,
+  actor: string,
+  kind: typeof taskActivity.$inferInsert.kind,
+  fromStatus?: TaskRow['status'],
+) {
+  await tx.insert(taskActivity).values({
+    projectId: task.projectId,
+    taskKey: task.taskKey,
+    actor,
+    kind,
+    fromStatus,
+    toStatus: kind === 'MOVED' ? task.status : undefined,
+  });
+}
+
+async function lockTask(
+  tx: Transaction,
+  taskId: string,
+  expectedVersion?: number,
+) {
+  const [task] = await tx
+    .select()
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .for('update');
+  if (!task) throw new ResourceNotFoundError('Task', taskId);
+  if (expectedVersion !== undefined && task.version !== expectedVersion)
+    throw new ResourceConflictError('Task version is outdated');
+  return task;
+}
+
+async function verifyAssignee(
+  tx: Transaction,
+  projectId: string,
+  assigneeId?: string | null,
+) {
+  if (!assigneeId) return;
+  const [member] = await tx
+    .select({ id: projectMemberships.userId })
+    .from(projectMemberships)
+    .where(
+      and(
+        eq(projectMemberships.projectId, projectId),
+        eq(projectMemberships.userId, assigneeId),
+      ),
+    );
+  if (!member)
+    throw new BadRequestException('Assignee must be a project member');
+}
+
+async function assertColumnCapacity(
+  tx: Transaction,
+  column: { id: string; title: string; wipLimit: number },
+) {
+  const [{ total }] = await tx
+    .select({ total: sql<number>`count(*)::int` })
+    .from(tasks)
+    .where(eq(tasks.columnId, column.id));
+  try {
+    new WipLimitPolicy().assertCapacity(total, column.wipLimit, column.title);
+  } catch (error) {
+    if (!(error instanceof WipLimitViolation)) throw error;
+    throw new ResourceConflictError('Target column WIP limit reached');
+  }
 }
 
 @Injectable()
@@ -154,13 +238,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
           })),
         );
 
-        await tx
-          .insert(projectMemberships)
-          .values({
-            projectId: createdProject.id,
-            userId: ownerId,
-            role: 'OWNER',
-          });
+        await tx.insert(projectMemberships).values({
+          projectId: createdProject.id,
+          userId: ownerId,
+          role: 'OWNER',
+        });
 
         return toProjectDto(createdProject);
       });
@@ -177,19 +259,44 @@ export class DrizzleProjectRepository implements ProjectRepository {
     }
   }
 
-  async listProjects(workspaceId: string): Promise<ProjectDto[]> {
+  async listProjects(
+    workspaceId: string,
+    userId: string,
+  ): Promise<ProjectDto[]> {
     const rows = await this.db
-      .select()
+      .select({ project: projects })
       .from(projects)
+      .innerJoin(
+        projectMemberships,
+        and(
+          eq(projectMemberships.projectId, projects.id),
+          eq(projectMemberships.userId, userId),
+        ),
+      )
       .where(eq(projects.workspaceId, workspaceId))
       .orderBy(asc(projects.createdAt));
 
-    return rows.map(toProjectDto);
+    return rows.map(({ project }) => toProjectDto(project));
+  }
+
+  async deleteProject(projectId: string): Promise<{ deleted: true }> {
+    return this.db.transaction(async (tx) => {
+      const [project] = await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .for('update');
+      if (!project) throw new ResourceNotFoundError('Project', projectId);
+      await tx.delete(tasks).where(eq(tasks.projectId, projectId));
+      await tx.delete(projects).where(eq(projects.id, projectId));
+      return { deleted: true };
+    });
   }
 
   async createTask(
     projectId: string,
     command: CreateTaskCommand,
+    actor: string,
   ): Promise<PersistedTaskDto> {
     return this.db.transaction(async (tx) => {
       const [projectCounter] = await tx
@@ -210,7 +317,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
       }
 
       const [plannedColumn] = await tx
-        .select({ id: boardColumns.id })
+        .select({
+          id: boardColumns.id,
+          title: boardColumns.title,
+          wipLimit: boardColumns.wipLimit,
+        })
         .from(boardColumns)
         .innerJoin(boards, eq(boardColumns.boardId, boards.id))
         .where(
@@ -227,6 +338,8 @@ export class DrizzleProjectRepository implements ProjectRepository {
           projectId,
         );
       }
+      await assertColumnCapacity(tx, plannedColumn);
+      await verifyAssignee(tx, projectId, command.assigneeId);
 
       const [created] = await tx
         .insert(tasks)
@@ -239,6 +352,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
         })
         .returning();
 
+      await recordActivity(tx, created, actor, 'CREATED');
       return toTaskDto(created);
     });
   }
@@ -283,6 +397,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   async moveTask(
     taskId: string,
     command: MovePersistedTaskCommand,
+    actor: string,
   ): Promise<PersistedTaskDto> {
     return this.db.transaction(async (tx) => {
       const [initial] = await tx
@@ -296,10 +411,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
         .from(projects)
         .where(eq(projects.id, initial.projectId))
         .for('update');
-      const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId));
-      if (!task) throw new ResourceNotFoundError('Task', taskId);
-      if (task.version !== command.expectedVersion)
-        throw new ResourceConflictError('Task version is outdated');
+      const task = await lockTask(tx, taskId, command.expectedVersion);
       try {
         new TaskStateContext().assertTransition(
           task.status,
@@ -309,7 +421,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
         throw new ResourceConflictError('Task state transition is not allowed');
       }
       const [target] = await tx
-        .select({ id: boardColumns.id, wipLimit: boardColumns.wipLimit })
+        .select({
+          id: boardColumns.id,
+          title: boardColumns.title,
+          wipLimit: boardColumns.wipLimit,
+        })
         .from(boardColumns)
         .innerJoin(boards, eq(boards.id, boardColumns.boardId))
         .where(
@@ -323,12 +439,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
           'Target column for project',
           task.projectId,
         );
-      const [{ total }] = await tx
-        .select({ total: sql<number>`count(*)::int` })
-        .from(tasks)
-        .where(eq(tasks.columnId, target.id));
-      if (total >= target.wipLimit)
-        throw new ResourceConflictError('Target column WIP limit reached');
+      await assertColumnCapacity(tx, target);
       const [updated] = await tx
         .update(tasks)
         .set({
@@ -339,7 +450,152 @@ export class DrizzleProjectRepository implements ProjectRepository {
         })
         .where(eq(tasks.id, taskId))
         .returning();
+      await recordActivity(tx, updated, actor, 'MOVED', task.status);
       return toTaskDto(updated);
     });
+  }
+
+  updateTask(
+    taskId: string,
+    { expectedVersion, ...changes }: UpdateTaskCommand,
+    actor: string,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const task = await lockTask(tx, taskId, expectedVersion);
+      await verifyAssignee(tx, task.projectId, changes.assigneeId);
+      const [updated] = await tx
+        .update(tasks)
+        .set({ ...changes, version: task.version + 1, updatedAt: new Date() })
+        .where(eq(tasks.id, taskId))
+        .returning();
+      await recordActivity(tx, updated, actor, 'UPDATED');
+      return toTaskDto(updated);
+    });
+  }
+
+  deleteTask(taskId: string, expectedVersion: number, actor: string) {
+    return this.db.transaction(async (tx) => {
+      const task = await lockTask(tx, taskId, expectedVersion);
+      await tx.delete(tasks).where(eq(tasks.id, taskId));
+      await recordActivity(tx, task, actor, 'DELETED');
+      return { deleted: true as const };
+    });
+  }
+
+  async taskDiscussion(taskId: string) {
+    const [comments, attachments] = await Promise.all([
+      this.db
+        .select({
+          commentId: taskComments.id,
+          author: taskComments.author,
+          body: taskComments.body,
+          createdAt: taskComments.createdAt,
+        })
+        .from(taskComments)
+        .where(eq(taskComments.taskId, taskId))
+        .orderBy(desc(taskComments.createdAt))
+        .limit(100),
+      this.db
+        .select({
+          attachmentId: taskAttachments.id,
+          name: taskAttachments.name,
+          size: taskAttachments.size,
+          sha256: taskAttachments.sha256,
+        })
+        .from(taskAttachments)
+        .where(eq(taskAttachments.taskId, taskId)),
+    ]);
+    return {
+      comments: comments.map((comment) => ({
+        ...comment,
+        createdAt: comment.createdAt.toISOString(),
+      })),
+      attachments,
+    };
+  }
+
+  addComment(taskId: string, body: string, actor: string) {
+    return this.db.transaction(async (tx) => {
+      const task = await lockTask(tx, taskId);
+      const [comment] = await tx
+        .insert(taskComments)
+        .values({ taskId, body, author: actor })
+        .returning({
+          commentId: taskComments.id,
+          body: taskComments.body,
+          author: taskComments.author,
+          createdAt: taskComments.createdAt,
+        });
+      await recordActivity(tx, task, actor, 'COMMENTED');
+      return { ...comment, createdAt: comment.createdAt.toISOString() };
+    });
+  }
+
+  addAttachment(
+    taskId: string,
+    { name, content }: AttachmentCommand,
+    actor: string,
+  ) {
+    const bytes = Buffer.from(content, 'base64');
+    if (bytes.length === 0 || bytes.length > maxAttachmentBytes)
+      throw new BadRequestException(
+        'Attachment must be between 1 byte and 2 MiB',
+      );
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    return this.db.transaction(async (tx) => {
+      const task = await lockTask(tx, taskId);
+      const [{ total }] = await tx
+        .select({ total: sql<number>`count(*)::int` })
+        .from(taskAttachments)
+        .where(eq(taskAttachments.taskId, taskId));
+      if (total >= 10)
+        throw new ResourceConflictError('Task attachment limit reached');
+      const [attachment] = await tx
+        .insert(taskAttachments)
+        .values({ taskId, name, content, sha256, size: bytes.length })
+        .returning({
+          attachmentId: taskAttachments.id,
+          name: taskAttachments.name,
+          size: taskAttachments.size,
+          sha256: taskAttachments.sha256,
+        });
+      await recordActivity(tx, task, actor, 'ATTACHED');
+      return attachment;
+    });
+  }
+
+  async getAttachment(taskId: string, attachmentId: string) {
+    const [attachment] = await this.db
+      .select({ name: taskAttachments.name, content: taskAttachments.content })
+      .from(taskAttachments)
+      .where(
+        and(
+          eq(taskAttachments.taskId, taskId),
+          eq(taskAttachments.id, attachmentId),
+        ),
+      );
+    if (!attachment)
+      throw new ResourceNotFoundError('Attachment', attachmentId);
+    return attachment;
+  }
+
+  async listActivity(projectId: string) {
+    const rows = await this.db
+      .select()
+      .from(taskActivity)
+      .where(eq(taskActivity.projectId, projectId))
+      .orderBy(desc(taskActivity.createdAt), desc(taskActivity.id))
+      .limit(100);
+    return rows.map(
+      ({ id, kind, taskKey, actor, createdAt, fromStatus, toStatus }) => ({
+        eventId: id,
+        kind,
+        taskKey,
+        actor,
+        createdAt: createdAt.toISOString(),
+        fromStatus,
+        toStatus,
+      }),
+    );
   }
 }

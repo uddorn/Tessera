@@ -5,6 +5,12 @@ import type {
   PersistedTaskDto,
   ProjectDto,
   WorkspaceDto,
+  ActivityDto,
+  AttachmentCommand,
+  AttachmentDto,
+  ProjectMemberDto,
+  TaskCommentDto,
+  UpdateTaskCommand,
 } from "@tessera/shared";
 import { accessToken } from "./auth";
 
@@ -46,7 +52,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const message = Array.isArray(body?.message)
       ? body.message.join(". ")
       : body?.message;
-    throw new Error(message ?? `HTTP ${response.status}: request failed`);
+    const translations: Record<string, string> = {
+      "Target column WIP limit reached": "У цій колонці вичерпано WIP-ліміт.",
+      "Task version is outdated":
+        "Задачу вже змінили. Оновіть дошку й повторіть дію.",
+      "Task state transition is not allowed":
+        "Цей перехід між статусами заборонений.",
+      "User must sign in once before being added":
+        "Цей користувач має один раз увійти в Tessera.",
+      "Owner role cannot be changed": "Роль власника не можна змінити.",
+      "Task attachment limit reached": "До задачі можна додати до 10 файлів.",
+      "Assignee must be a project member":
+        "Виконавця потрібно додати до команди проєкту.",
+    };
+    const fallback =
+      response.status === 401
+        ? "Сеанс завершився. Увійдіть знову."
+        : response.status === 403
+          ? "Недостатньо прав для цієї дії."
+          : response.status === 400
+            ? "Перевірте дані форми."
+            : response.status === 404
+              ? "Запис не знайдено."
+              : `Не вдалося виконати запит (HTTP ${response.status}).`;
+    throw new Error((message && translations[message]) || fallback);
   }
 
   return response.json() as Promise<T>;
@@ -58,6 +87,19 @@ export function listWorkspaces() {
 
 export function listProjects(workspaceId: string) {
   return request<ProjectDto[]>(`/workspaces/${workspaceId}/projects`);
+}
+
+export function deleteProject(projectId: string) {
+  return request<{ deleted: true }>(`/projects/${projectId}`, {
+    method: "DELETE",
+  });
+}
+
+export function removeProjectMember(projectId: string, memberId: string) {
+  return request<{ removed: true }>(
+    `/projects/${projectId}/members/${memberId}`,
+    { method: "DELETE" },
+  );
 }
 
 export function myProjectRole(projectId: string) {
@@ -117,4 +159,52 @@ export function moveTask(
     method: "PATCH",
     body: JSON.stringify({ targetStatus, expectedVersion }),
   });
+}
+
+export function listMembers(projectId: string) {
+  return request<ProjectMemberDto[]>(`/projects/${projectId}/members`);
+}
+
+export function listActivity(projectId: string) {
+  return request<ActivityDto[]>(`/projects/${projectId}/activity`);
+}
+
+export function updateTask(taskId: string, command: UpdateTaskCommand) {
+  return request<PersistedTaskDto>(`/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify(command),
+  });
+}
+
+export function deleteTask(taskId: string, expectedVersion: number) {
+  return request<{ deleted: true }>(`/tasks/${taskId}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedVersion }),
+  });
+}
+
+export function getDiscussion(taskId: string) {
+  return request<{ comments: TaskCommentDto[]; attachments: AttachmentDto[] }>(
+    `/tasks/${taskId}/discussion`,
+  );
+}
+
+export function addComment(taskId: string, body: string) {
+  return request<TaskCommentDto>(`/tasks/${taskId}/comments`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
+export function addAttachment(taskId: string, command: AttachmentCommand) {
+  return request<AttachmentDto>(`/tasks/${taskId}/attachments`, {
+    method: "POST",
+    body: JSON.stringify(command),
+  });
+}
+
+export function getAttachment(taskId: string, attachmentId: string) {
+  return request<{ name: string; content: string }>(
+    `/tasks/${taskId}/attachments/${attachmentId}`,
+  );
 }

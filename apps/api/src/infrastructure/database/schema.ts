@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   check,
+  date,
   index,
   integer,
   pgEnum,
@@ -204,6 +205,8 @@ export const tasks = pgTable(
       .references(() => boardColumns.id, { onDelete: 'restrict' }),
     taskKey: varchar('task_key', { length: 32 }).notNull(),
     title: varchar('title', { length: 240 }).notNull(),
+    description: text('description').notNull().default(''),
+    dueDate: date('due_date'),
     priority: taskPriorityEnum('priority').notNull().default('NORMAL'),
     status: taskStatusEnum('status').notNull().default('PLANNED'),
     storyPoints: integer('story_points').notNull().default(0),
@@ -231,6 +234,67 @@ export const tasks = pgTable(
       sql`${table.storyPoints} >= 0 AND ${table.storyPoints} <= 100`,
     ),
     check('tasks_version_positive', sql`${table.version} > 0`),
+  ],
+);
+
+export const taskComments = pgTable(
+  'task_comments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    author: varchar('author', { length: 160 }).notNull(),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index('task_comments_task_idx').on(table.taskId)],
+);
+
+export const taskAttachments = pgTable(
+  'task_attachments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 160 }).notNull(),
+    size: integer('size').notNull(),
+    sha256: varchar('sha256', { length: 64 }).notNull(),
+    content: text('content').notNull(),
+  },
+  (table) => [index('task_attachments_task_idx').on(table.taskId)],
+);
+
+export const taskActivityKind = pgEnum('task_activity_kind', [
+  'CREATED',
+  'UPDATED',
+  'MOVED',
+  'DELETED',
+  'COMMENTED',
+  'ATTACHED',
+]);
+
+export const taskActivity = pgTable(
+  'task_activity',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    taskKey: varchar('task_key', { length: 32 }).notNull(),
+    actor: varchar('actor', { length: 160 }).notNull(),
+    kind: taskActivityKind('kind').notNull(),
+    fromStatus: taskStatusEnum('from_status'),
+    toStatus: taskStatusEnum('to_status'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index('task_activity_project_idx').on(table.projectId, table.createdAt),
   ],
 );
 

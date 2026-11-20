@@ -15,6 +15,13 @@
       "when": 1795023192706,
       "tag": "0001_nifty_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795074198922,
+      "tag": "0002_secret_madripoor",
+      "breakpoints": true
     }
   ]
 }

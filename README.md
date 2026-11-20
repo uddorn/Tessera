@@ -31,6 +31,9 @@ Tessera evolves a coursework architectural MVP into a bachelor-level product wit
 - sequential task keys and database-backed conflict/not-found handling;
 - Keycloak OIDC login, signed access-token verification, and project role checks;
 - workspace/project membership persisted in PostgreSQL;
+- searchable Kanban with drag and drop, overview, deadlines, team and audit screens in a shared responsive glass interface;
+- owner-confirmed project deletion and role-checked member removal with transactional task unassignment;
+- task editing, assignees, deadlines, comments and small downloadable attachments;
 - automated unit and E2E tests plus lint, typecheck, and production builds;
 - five healthy Docker services with persistent data and loopback-only ports.
 
@@ -78,14 +81,16 @@ The initial migration creates seven constrained tables; Sprint 3 adds `workspace
 
 The `tessera` realm is imported from `infra/keycloak/tessera-realm.json` on first Keycloak startup. The browser uses Authorization Code + PKCE. The API validates JWT signature, issuer, expiry, algorithm and the authorized client (`azp`) against Keycloak's JWKS. Roles are stored per project in PostgreSQL; a role embedded in a token never grants project access by itself.
 
-| Role   | Read board | Create/move tasks | Create projects / add members |
-| ------ | ---------- | ----------------- | ----------------------------- |
-| OWNER  | Yes        | Yes               | Yes                           |
-| ADMIN  | Yes        | Yes               | Yes                           |
-| MEMBER | Yes        | Yes               | No                            |
-| VIEWER | Yes        | No                | No                            |
+| Project role | Read board | Create, edit, move and discuss tasks | Delete tasks and manage access | Delete project |
+| ------------ | ---------- | ------------------------------------ | ------------------------------ | -------------- |
+| OWNER        | Yes        | Yes                                  | Yes                            | Yes            |
+| ADMIN        | Yes        | Yes                                  | Yes                            | No             |
+| MEMBER       | Yes        | Yes                                  | No                             | No             |
+| VIEWER       | Yes        | No                                   | No                             | No             |
 
-The creator owns each new workspace and project. An owner or admin can add a user by email after that user signs in once. Older projects made before Sprint 3 have no owner assigned; they are intentionally not exposed to a newly authenticated account.
+The creator owns each new workspace and project. Workspace roles control project creation, while project roles control access to each board. An owner or admin can add a user by email after that user signs in once. Older projects made before Sprint 3 have no owner assigned; they are intentionally not exposed to a newly authenticated account.
+
+On the project picker, only the owner can delete a project by entering its code. This permanently removes the project and its board, tasks, comments, attachments and audit records. Owners can remove any non-owner project member; admins can remove members and viewers. Removal revokes project access and clears that user's task assignments while increasing task versions and recording the changes in the audit log. The Kanban drag interaction accepts any other column with available WIP capacity; the status selector remains available for keyboard use.
 
 ## Verified infrastructure
 
@@ -162,9 +167,26 @@ sudo docker compose stop
 > [!CAUTION]
 > `docker compose down --volumes` permanently deletes the local databases, object storage, cache, and captured mail.
 
-Open <http://localhost:5173> and select **Увійти**. The local demo usernames are `tessera-owner`, `tessera-member`, and `tessera-viewer`; their distinct passwords are in the gitignored `.env` (`TESSERA_DEMO_*_PASSWORD`). They are separate accounts, not automatic project members. Sign in once with each account, then use **＋ Учасник** as the project owner to add the member/viewer by email. Demo credentials are for localhost development only.
+Open <http://localhost:5173> and select **Увійти через Keycloak**. The local demo usernames are `tessera-owner`, `tessera-member`, and `tessera-viewer`; their distinct passwords are in the gitignored `.env` (`TESSERA_DEMO_*_PASSWORD`). Sign in once with each account, then use **Команда → Надати доступ** as the project owner to add the member/viewer by email. Demo credentials are for localhost development only.
 
 Keycloak startup import skips an existing `tessera` realm; editing its JSON later does not overwrite user data. Existing projects remain preserved in PostgreSQL.
+
+On an existing local install, apply the branded Ukrainian login theme once:
+
+```bash
+sudo docker compose up -d --wait keycloak
+pnpm auth:theme
+```
+
+New realms get the theme from the import. The theme extends Keycloak's built-in login flow and is mounted from `infra/keycloak/themes/tessera`.
+
+## Coursework demo
+
+1. As the owner, create a project with code `PAY`, then create a task with an assignee, deadline and story-point estimate.
+2. Open the task to write a comment and attach a small file. Coursework attachments are stored in PostgreSQL with a SHA-256 checksum, with a 2 MiB limit per file and up to 10 files per task.
+3. Move four tasks to **У роботі** and try moving a fifth. The server rejects the fifth request with HTTP 409 and preserves the board.
+4. In **Журнал змін**, show that successful moves, edits, comments, and attachments were recorded. Task changes and audit rows commit in the same transaction.
+5. Open **Огляд** to relate the operation to the four layers. Repeat with a viewer account to demonstrate read-only access.
 
 ## Security-minded development defaults
 
@@ -219,7 +241,7 @@ compose.yaml
 | ◌ Planned | **Sprint 4 · Platform Services**  | S3 attachments, audit history, and notification delivery           |
 | ◌ Planned | **Sprint 5 · Product Experience** | Kanban UI enhancements, accessibility, and real-time collaboration |
 
-**Current focus:** Sprint 4 adds attachments, audit history, and notifications to the authenticated Kanban slice.
+**Coursework release:** the authenticated Kanban slice includes an activity log and bounded PostgreSQL attachments. Garage-backed storage, external notifications and real-time collaboration remain part of the bachelor roadmap.
 
 ---
 

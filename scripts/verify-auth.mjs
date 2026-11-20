@@ -1,4 +1,5 @@
 import { loadEnvFile } from "node:process";
+import { readFile } from "node:fs/promises";
 loadEnvFile(".env");
 
 const base = "http://localhost:8080";
@@ -19,18 +20,19 @@ if (!tokenResponse.ok)
   throw new Error(`Keycloak admin login failed: HTTP ${tokenResponse.status}`);
 const { access_token: token } = await tokenResponse.json();
 
-async function adminGet(path) {
-  const response = await fetch(`${base}/admin/realms/tessera/${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+async function adminRequest(path = "", init = {}) {
+  const response = await fetch(`${base}/admin/realms/tessera${path}`, {
+    ...init,
+    headers: { ...init.headers, Authorization: `Bearer ${token}` },
   });
   if (!response.ok)
     throw new Error(`Keycloak ${path}: HTTP ${response.status}`);
-  return response.json();
+  return response.status === 204 ? undefined : response.json();
 }
 
 const [users, clients] = await Promise.all([
-  adminGet("users?max=100"),
-  adminGet("clients?clientId=tessera-web"),
+  adminRequest("/users?max=100"),
+  adminRequest("/clients?clientId=tessera-web"),
 ]);
 const expected = ["tessera-owner", "tessera-member", "tessera-viewer"];
 const missing = expected.filter(
@@ -51,3 +53,32 @@ if (
 console.log(
   "Keycloak realm ready: public OIDC client and 3 demo users verified.",
 );
+
+if (process.argv.includes("--apply-theme")) {
+  const configured = JSON.parse(
+    await readFile(
+      new URL("../infra/keycloak/tessera-realm.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const realm = await adminRequest();
+  const appearance = {
+    loginTheme: configured.loginTheme,
+    internationalizationEnabled: configured.internationalizationEnabled,
+    defaultLocale: configured.defaultLocale,
+    supportedLocales: [
+      ...new Set([
+        ...(realm.supportedLocales ?? []),
+        ...configured.supportedLocales,
+      ]),
+    ],
+  };
+  await adminRequest("", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(appearance),
+  });
+  console.log(
+    `Keycloak login theme: ${appearance.loginTheme} (${appearance.defaultLocale}).`,
+  );
+}

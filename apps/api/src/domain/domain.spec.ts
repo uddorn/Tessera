@@ -30,9 +30,10 @@ describe('coursework domain migration', () => {
     );
   });
 
-  it('blocks Planned -> Done', () => {
-    expect(() =>
-      new TaskStateContext().assertTransition('PLANNED', 'DONE'),
-    ).toThrow();
+  it('allows moving across columns but rejects the current status', () => {
+    const state = new TaskStateContext();
+    expect(() => state.assertTransition('PLANNED', 'DONE')).not.toThrow();
+    expect(() => state.assertTransition('DONE', 'PLANNED')).not.toThrow();
+    expect(() => state.assertTransition('DONE', 'DONE')).toThrow();
   });
 });

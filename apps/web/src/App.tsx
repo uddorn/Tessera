@@ -1,20 +1,50 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import type { PersistedTaskDto } from "@tessera/shared";
 import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { motion } from "motion/react";
+import type {
+  ActivityDto,
+  PersistedTaskDto,
+  ProjectMemberDto,
+  ProjectRole,
+} from "@tessera/shared";
+import {
+  addProjectMember,
   createProject,
-  createTask,
   createWorkspace,
+  deleteProject,
   getBoard,
+  listActivity,
+  listMembers,
   listProjects,
   listWorkspaces,
-  myProjectRole,
-  addProjectMember,
   moveTask,
-  type BoardDto,
+  myProjectRole,
+  removeProjectMember,
 } from "./api";
-import { adjacentStatus, boardSummary, slugify, statusLabels } from "./board";
+import type { BoardDto, TaskStatus } from "./api";
 import { auth } from "./auth";
+import { boardSummary, slugify, statusLabels, statusOrder } from "./board";
+import { TaskDialog } from "./TaskDialog";
+import { Welcome } from "./Welcome";
+import { Brand, Dialog, Icon, Notice } from "./ui";
+import {
+  dateLabel,
+  errorMessage,
+  initials,
+  priorityLabels,
+  roleLabels,
+} from "./display";
+import type { IconName } from "./ui";
 import "./App.css";
 
 interface Session {
@@ -27,66 +57,131 @@ interface Session {
 
 const sessionKey = () =>
   `tessera.coursework.session.${auth.subject ?? "guest"}`;
+const userName = () =>
+  String(
+    auth.tokenParsed?.name ??
+      auth.tokenParsed?.preferred_username ??
+      "Користувач",
+  );
+const logout = () => void auth.logout({ redirectUri: window.location.origin });
 
 function loadSession(): Session | null {
   try {
-    const value = localStorage.getItem(sessionKey());
-    return value ? (JSON.parse(value) as Session) : null;
+    const value: unknown = JSON.parse(
+      localStorage.getItem(sessionKey()) ?? "null",
+    );
+    if (
+      value &&
+      typeof value === "object" &&
+      "projectId" in value &&
+      typeof value.projectId === "string"
+    )
+      return value as Session;
   } catch {
-    return null;
+    // The project picker remains available when browser storage is inaccessible.
   }
+  return null;
 }
 
-function Icon({ children }: { children: ReactNode }) {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      {children}
-    </svg>
-  );
-}
+const pages = {
+  board: {
+    title: "Kanban-дошка",
+    label: "Дошка",
+    icon: "board",
+    description:
+      "Від плану до готового результату. Стежте за навантаженням на кожному етапі.",
+  },
+  overview: {
+    title: "Огляд проєкту",
+    label: "Огляд",
+    icon: "overview",
+    description: "Поточний стан задач і розподіл роботи за етапами.",
+  },
+  calendar: {
+    title: "Дедлайни",
+    label: "Дедлайни",
+    icon: "calendar",
+    description: "Задачі з визначеним терміном виконання.",
+  },
+  team: {
+    title: "Команда",
+    label: "Команда",
+    icon: "team",
+    description: "Учасники проєкту та їхні права доступу.",
+  },
+  activity: {
+    title: "Журнал змін",
+    label: "Журнал змін",
+    icon: "activity",
+    description: "До 100 останніх операцій, зафіксованих у PostgreSQL.",
+  },
+} as const satisfies Record<
+  string,
+  { title: string; label: string; icon: IconName; description: string }
+>;
+type Page = keyof typeof pages;
+const pageOrder = Object.keys(pages) as Page[];
 
 function Setup({ onReady }: { onReady: (session: Session) => void }) {
-  const [workspaceName, setWorkspaceName] = useState("Tessera Workspace");
-  const [projectName, setProjectName] = useState("Coursework Kanban");
-  const [projectCode, setProjectCode] = useState("TES");
-  const [pending, setPending] = useState(false);
+  const [available, setAvailable] =
+    useState<(Session & { role: ProjectRole })[]>();
   const [error, setError] = useState("");
-  const [available, setAvailable] = useState<Session[]>([]);
+  const [pending, setPending] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
+  const [deleting, setDeleting] = useState<Session | null>(null);
 
   useEffect(() => {
-    void listWorkspaces()
-      .then(async (workspaces) => {
-        const choices = await Promise.all(
-          workspaces.map(async (workspace) => {
-            const projects = await listProjects(workspace.workspaceId);
-            return projects.map((project) => ({
-              workspaceId: workspace.workspaceId,
-              workspaceName: workspace.name,
-              projectId: project.projectId,
-              projectName: project.name,
-              projectCode: project.code,
-            }));
-          }),
+    let active = true;
+    void (async () => {
+      try {
+        const workspaces = await listWorkspaces();
+        const groups = await Promise.all(
+          workspaces.map(async (workspace) =>
+            Promise.all(
+              (await listProjects(workspace.workspaceId)).map(
+                async (project) => ({
+                  workspaceId: workspace.workspaceId,
+                  workspaceName: workspace.name,
+                  projectId: project.projectId,
+                  projectName: project.name,
+                  projectCode: project.code,
+                  role: (await myProjectRole(project.projectId)).role,
+                }),
+              ),
+            ),
+          ),
         );
-        setAvailable(choices.flat());
-      })
-      .catch(() => setError("Не вдалося завантажити ваші проєкти"));
+        if (active) setAvailable(groups.flat());
+      } catch (caught) {
+        if (active) setError(errorMessage(caught));
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("workspace")).trim();
+    const projectName = String(form.get("project")).trim();
+    const code = String(form.get("code")).trim();
+    if (name.length < 2 || projectName.length < 2) {
+      setError("Введіть назви простору й проєкту.");
+      return;
+    }
     setPending(true);
     setError("");
     try {
-      const suffix = Date.now().toString(36).slice(-5);
       const workspace = await createWorkspace({
-        name: workspaceName.trim(),
-        slug: `${slugify(workspaceName) || "tessera"}-${suffix}`,
+        name,
+        slug: `${slugify(name).slice(0, 65).replace(/-$/, "") || "tessera"}-${crypto.randomUUID().slice(0, 8)}`,
       });
       const project = await createProject(workspace.workspaceId, {
-        name: projectName.trim(),
-        code: projectCode.trim().toUpperCase(),
-        description: "Архітектурно орієнтована Kanban-платформа",
+        name: projectName,
+        code,
+        description: "",
       });
       onReady({
         workspaceId: workspace.workspaceId,
@@ -96,634 +191,1083 @@ function Setup({ onReady }: { onReady: (session: Session) => void }) {
         projectCode: project.code,
       });
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Не вдалося створити проєкт",
-      );
+      setError(errorMessage(caught));
     } finally {
       setPending(false);
     }
   }
 
   return (
-    <main className="setup-shell">
-      <section className="setup-copy">
-        <div className="brand brand--large">
-          <span className="brand-mark">T</span>
-          <span>Tessera</span>
-        </div>
-        <p className="kicker">
-          <span /> Архітектурна Kanban-платформа
+    <main className="entry">
+      <header className="entry-top">
+        <Brand />
+        <button className="button button--secondary" onClick={logout}>
+          <Icon name="exit" /> Вийти
+        </button>
+      </header>
+      <section className="entry-card stack">
+        <p className="eyebrow">Робочий простір</p>
+        <h1>Ваші проєкти</h1>
+        <p className="muted">
+          {userName()}, оберіть проєкт або створіть новий.
         </p>
-        <h1>Перетворюйте складну роботу на зрозумілий потік.</h1>
-        <p className="setup-lead">
-          React boundary, NestJS application layer і PostgreSQL persistence вже
-          зібрані в один відтворюваний продукт.
-        </p>
-        <div className="architecture-strip">
-          <span>React 19</span>
-          <i />
-          <span>NestJS 12</span>
-          <i />
-          <span>PostgreSQL 18</span>
-          <i />
-          <span>Docker</span>
-        </div>
-      </section>
-
-      <section className="setup-card">
-        <div className="step-badge">01</div>
-        <p className="overline">Швидкий старт</p>
-        <h2>Створіть першу дошку</h2>
-        <p className="muted">Дані зберігатимуться у локальному PostgreSQL.</p>
-        {available.length > 0 && (
-          <div className="existing-projects">
-            <p>Ваші проєкти</p>
-            {available.map((item) => (
-              <button key={item.projectId} onClick={() => onReady(item)}>
-                {item.projectName} <small>{item.projectCode}</small>
-              </button>
-            ))}
-          </div>
+        {error && <Notice error>{error}</Notice>}
+        {!available && !error && (
+          <p className="muted" role="status">
+            Завантажуємо проєкти…
+          </p>
         )}
-        <form onSubmit={submit}>
-          <label>
-            Робочий простір
-            <input
-              value={workspaceName}
-              onChange={(event) => setWorkspaceName(event.target.value)}
-              minLength={2}
-              maxLength={160}
-              required
-            />
-          </label>
-          <label>
-            Назва проєкту
-            <input
-              value={projectName}
-              onChange={(event) => setProjectName(event.target.value)}
-              minLength={2}
-              maxLength={160}
-              required
-            />
-          </label>
-          <label>
-            Код задач
-            <input
-              value={projectCode}
-              onChange={(event) => setProjectCode(event.target.value)}
-              pattern="[A-Za-z][A-Za-z0-9]{1,11}"
-              required
-            />
-            <small>Наприклад, TES → TES-1, TES-2</small>
-          </label>
-          {error && <p className="form-error">{error}</p>}
-          <button className="primary-button" disabled={pending}>
-            {pending ? "Створюємо…" : "Запустити робочий простір"}
-            <span>→</span>
+        {available?.length === 0 && (
+          <p className="muted">
+            У вас поки немає проєктів. Власник іншого проєкту може додати вас за
+            електронною поштою.
+          </p>
+        )}
+        {available?.map((item) => (
+          <div className="project-choice" key={item.projectId}>
+            <button
+              className="project-choice-main"
+              onClick={() => onReady(item)}
+            >
+              <span className="project-symbol">
+                {item.projectCode.slice(0, 3)}
+              </span>
+              <span>
+                <strong>{item.projectName}</strong>
+                <small>{item.workspaceName}</small>
+              </span>
+            </button>
+            {item.role === "OWNER" && (
+              <button
+                className="button button--icon project-delete"
+                title={`Видалити проєкт ${item.projectName}`}
+                aria-label={`Видалити проєкт ${item.projectName}`}
+                onClick={() => setDeleting(item)}
+              >
+                <Icon name="trash" />
+              </button>
+            )}
+          </div>
+        ))}
+        {!newOpen ? (
+          <button
+            className="button button--primary self-start"
+            onClick={() => setNewOpen(true)}
+          >
+            <Icon name="plus" /> Новий проєкт
           </button>
-        </form>
+        ) : (
+          <form className="stack" onSubmit={(event) => void submit(event)}>
+            <label>
+              Назва робочого простору{" "}
+              <input
+                name="workspace"
+                required
+                minLength={2}
+                maxLength={160}
+                placeholder="Наприклад, Команда розробки"
+              />
+            </label>
+            <label>
+              Назва проєкту{" "}
+              <input
+                name="project"
+                required
+                minLength={2}
+                maxLength={160}
+                placeholder="Наприклад, Платіжний шлюз v2.0"
+              />
+            </label>
+            <label>
+              Код проєкту{" "}
+              <input
+                name="code"
+                required
+                pattern="[A-Za-z][A-Za-z0-9]{1,11}"
+                placeholder="PAY"
+                title="Від 2 до 12 латинських літер або цифр, починаючи з літери"
+              />
+              <small>Використовується в номерах задач, наприклад PAY-1.</small>
+            </label>
+            <div className="actions">
+              <button
+                type="button"
+                className="button button--secondary"
+                disabled={pending}
+                onClick={() => setNewOpen(false)}
+              >
+                Скасувати
+              </button>
+              <button className="button button--primary" disabled={pending}>
+                {pending ? "Створюємо…" : "Створити проєкт"}
+              </button>
+            </div>
+          </form>
+        )}
       </section>
+      {deleting && (
+        <DeleteProjectDialog
+          project={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setAvailable((current) =>
+              current?.filter((item) => item.projectId !== deleting.projectId),
+            );
+            setDeleting(null);
+          }}
+        />
+      )}
     </main>
   );
 }
 
-function TaskCard({
-  task,
-  moving,
-  onMove,
-  canWrite,
+function DeleteProjectDialog({
+  project,
+  onClose,
+  onDeleted,
 }: {
-  task: PersistedTaskDto;
-  moving: boolean;
-  onMove: (task: PersistedTaskDto, direction: -1 | 1) => void;
-  canWrite: boolean;
+  project: Session;
+  onClose: () => void;
+  onDeleted: () => void;
 }) {
-  const previous = adjacentStatus(task.status, -1);
-  const next = adjacentStatus(task.status, 1);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function confirm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (code !== project.projectCode) return;
+    setBusy(true);
+    try {
+      await deleteProject(project.projectId);
+      onDeleted();
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setBusy(false);
+    }
+  }
   return (
-    <article className="task-card">
-      <div className="task-meta">
-        <span className={`priority priority--${task.priority.toLowerCase()}`}>
-          {task.priority === "NORMAL" ? "ЗВИЧАЙНИЙ" : task.priority}
-        </span>
-        <button className="icon-button" aria-label="Меню задачі">
-          •••
-        </button>
-      </div>
-      <h3>{task.title}</h3>
-      <p className="task-key">{task.taskKey}</p>
-      <div className="task-footer">
-        <span className="avatar" title="Не призначено">
-          ?
-        </span>
-        <span className="points" title="Story points">
-          ◆ {task.storyPoints}
-        </span>
-        <div className="move-actions">
-          {canWrite && previous && (
-            <button
-              disabled={moving}
-              onClick={() => onMove(task, -1)}
-              title={`Перемістити: ${statusLabels[previous]}`}
-            >
-              ←
-            </button>
-          )}
-          {canWrite && next && (
-            <button
-              disabled={moving}
-              onClick={() => onMove(task, 1)}
-              title={`Перемістити: ${statusLabels[next]}`}
-            >
-              →
-            </button>
-          )}
+    <Dialog
+      title="Видалити проєкт"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <form
+        className="dialog-body stack"
+        onSubmit={(event) => void confirm(event)}
+      >
+        <p>
+          Проєкт «{project.projectName}» буде видалено разом із задачами,
+          файлами, коментарями та журналом. Цю дію неможливо скасувати.
+        </p>
+        <label>
+          Введіть код {project.projectCode} для підтвердження
+          <input
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            autoFocus
+            autoComplete="off"
+          />
+        </label>
+        {error && <Notice error>{error}</Notice>}
+        <div className="actions">
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Скасувати
+          </button>
+          <button
+            className="button button--danger"
+            disabled={busy || code !== project.projectCode}
+          >
+            {busy ? "Видаляємо…" : "Видалити назавжди"}
+          </button>
         </div>
-      </div>
-    </article>
+      </form>
+    </Dialog>
   );
 }
 
-function BoardApp({
-  session,
-  onReset,
-}: {
-  session: Session;
-  onReset: () => void;
-}) {
-  const [board, setBoard] = useState<BoardDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [newTaskOpen, setNewTaskOpen] = useState(false);
-  const [taskTitle, setTaskTitle] = useState("");
-  const [priority, setPriority] = useState<
-    "LOW" | "NORMAL" | "HIGH" | "CRITICAL"
-  >("NORMAL");
-  const [storyPoints, setStoryPoints] = useState(3);
-  const [savingTask, setSavingTask] = useState(false);
-  const [movingTask, setMovingTask] = useState<string | null>(null);
-  const [role, setRole] = useState<
-    "OWNER" | "ADMIN" | "MEMBER" | "VIEWER" | null
-  >(null);
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">(
-    "MEMBER",
-  );
-
-  useEffect(() => {
-    void myProjectRole(session.projectId)
-      .then((value) => setRole(value.role))
-      .catch(() => setError("Немає доступу до цього проєкту. Оберіть інший."));
-  }, [session.projectId]);
-  const canWrite = role === "OWNER" || role === "ADMIN" || role === "MEMBER";
-  const canManage = role === "OWNER" || role === "ADMIN";
-
-  const refresh = useCallback(async () => {
-    try {
-      setError("");
-      setBoard(await getBoard(session.projectId));
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Не вдалося завантажити дошку",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [session.projectId]);
-
-  useEffect(() => {
-    // Initial remote data loading is the synchronization performed by this effect.
-    // oxlint-disable-next-line react/set-state-in-effect
-    void refresh();
-  }, [refresh]);
-
-  const summary = useMemo(() => boardSummary(board), [board]);
+function Metrics({ board }: { board: BoardDto }) {
+  const summary = boardSummary(board);
+  const donePoints = board.columns
+    .flatMap((column) => column.tasks)
+    .filter((task) => task.status === "DONE")
+    .reduce((sum, task) => sum + task.storyPoints, 0);
   const completion = summary.total
     ? Math.round((summary.done / summary.total) * 100)
     : 0;
-
-  async function submitTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSavingTask(true);
-    setError("");
-    try {
-      await createTask(session.projectId, {
-        title: taskTitle.trim(),
-        priority,
-        storyPoints,
-      });
-      setTaskTitle("");
-      setPriority("NORMAL");
-      setStoryPoints(3);
-      setNewTaskOpen(false);
-      await refresh();
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Не вдалося створити задачу",
-      );
-    } finally {
-      setSavingTask(false);
-    }
-  }
-
-  async function handleMove(task: PersistedTaskDto, direction: -1 | 1) {
-    const target = adjacentStatus(task.status, direction);
-    if (!target) return;
-    setMovingTask(task.taskId);
-    setError("");
-    try {
-      await moveTask(task.taskId, target, task.version);
-      await refresh();
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Не вдалося перемістити задачу",
-      );
-      await refresh();
-    } finally {
-      setMovingTask(null);
-    }
-  }
-
-  async function submitInvite(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    try {
-      await addProjectMember(session.projectId, inviteEmail.trim(), inviteRole);
-      setInviteOpen(false);
-      setInviteEmail("");
-    } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "Не вдалося додати учасника",
-      );
-    }
-  }
-
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">T</span>
-          <span>Tessera</span>
-        </div>
-        <nav aria-label="Головна навігація">
-          <button className="nav-item">
-            <Icon>
-              <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />
-            </Icon>
-            Огляд
-          </button>
-          <button className="nav-item nav-item--active">
-            <Icon>
-              <path d="M4 5h4v14H4zM10 5h4v9h-4zM16 5h4v11h-4z" />
-            </Icon>
-            Дошка
-          </button>
-          <button className="nav-item">
-            <Icon>
-              <path d="M7 3v3M17 3v3M4 8h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1z" />
-            </Icon>
-            Календар
-          </button>
-          <button className="nav-item">
-            <Icon>
-              <circle cx="9" cy="8" r="3" />
-              <path d="M3 20c0-4 2-6 6-6s6 2 6 6M16 5c3 0 5 2 5 5s-2 5-5 5" />
-            </Icon>
-            Команда
-          </button>
-        </nav>
-        <div className="sidebar-section">
-          <p>Ваш проєкт</p>
-          <button className="project-chip">
-            <span>{session.projectCode.slice(0, 2)}</span>
-            <span>
-              <b>{session.projectName}</b>
-              <small>{session.projectCode}</small>
-            </span>
-          </button>
-        </div>
-        <div className="sidebar-bottom">
-          <button className="nav-item">
-            <Icon>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" />
-            </Icon>
-            Налаштування
-          </button>
-          <button
-            className="profile"
-            onClick={onReset}
-            title="Змінити локальний проєкт"
-          >
-            <span className="profile-avatar">DT</span>
-            <span>
-              <b>
-                {String(
-                  auth.tokenParsed?.name ??
-                    auth.tokenParsed?.preferred_username ??
-                    "Користувач",
-                )}
-              </b>
-              <small>{role ?? "Учасник"}</small>
-            </span>
-            <span>⋮</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <header className="topbar">
-          <div className="breadcrumbs">
-            <span>{session.workspaceName}</span>
-            <b>/</b>
-            <strong>{session.projectName}</strong>
-          </div>
-          <div className="top-actions">
-            <button className="search-button">
-              ⌕ <span>Пошук задач…</span>
-              <kbd>⌘ K</kbd>
-            </button>
-            <button className="round-button" aria-label="Сповіщення">
-              ♢<i />
-            </button>
-            <button
-              className="avatar avatar--header"
-              onClick={() =>
-                void auth.logout({ redirectUri: window.location.origin })
-              }
-              title="Вийти"
-            >
-              ↪
-            </button>
-          </div>
-        </header>
-
-        <section className="content">
-          <div className="page-heading">
-            <div>
-              <p className="overline">Проєкт / {session.projectCode}</p>
-              <h1>Kanban-дошка</h1>
-              <p className="muted">
-                Керуйте потоком робіт і контролюйте WIP-ліміти команди.
-              </p>
-            </div>
-            <div className="heading-actions">
-              {canManage && (
-                <button
-                  className="secondary-button"
-                  onClick={() => setInviteOpen(true)}
-                >
-                  ＋ Учасник
-                </button>
-              )}
-              <button
-                className="secondary-button"
-                onClick={() => void refresh()}
-              >
-                ↻ Оновити
-              </button>
-              {canWrite && (
-                <button
-                  className="primary-button primary-button--compact"
-                  onClick={() => setNewTaskOpen(true)}
-                >
-                  ＋ Нова задача
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="metrics">
-            <div className="metric">
-              <span>Усього задач</span>
-              <strong>{summary.total}</strong>
-              <small>У поточному проєкті</small>
-            </div>
-            <div className="metric">
-              <span>У роботі</span>
-              <strong>{summary.inProgress}</strong>
-              <small>WIP під контролем</small>
-            </div>
-            <div className="metric">
-              <span>Виконано</span>
-              <strong>{summary.done}</strong>
-              <small>{completion}% завершено</small>
-            </div>
-            <div className="metric metric--progress">
-              <span>Прогрес</span>
-              <strong>{completion}%</strong>
-              <div className="progress">
-                <i style={{ width: `${completion}%` }} />
-              </div>
-              <small>{summary.storyPoints} story points загалом</small>
-            </div>
-          </div>
-
-          {error && (
-            <div className="error-banner">
-              <span>!</span>
-              {error}
-              <button onClick={() => setError("")}>×</button>
-            </div>
-          )}
-
-          {inviteOpen && (
-            <form className="invite-form" onSubmit={submitInvite}>
-              <label>Додати учасника, який уже увійшов хоча б раз</label>
-              <input
-                type="email"
-                placeholder="member@tessera.local"
-                value={inviteEmail}
-                onChange={(event) => setInviteEmail(event.target.value)}
-                required
-              />
-              <select
-                value={inviteRole}
-                onChange={(event) =>
-                  setInviteRole(event.target.value as typeof inviteRole)
-                }
-              >
-                <option value="ADMIN">Адмін</option>
-                <option value="MEMBER">Учасник</option>
-                <option value="VIEWER">Переглядач</option>
-              </select>
-              <button className="primary-button primary-button--compact">
-                Додати
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => setInviteOpen(false)}
-              >
-                Скасувати
-              </button>
-            </form>
-          )}
-
-          {canWrite && newTaskOpen && (
-            <form className="new-task-form" onSubmit={submitTask}>
-              <div>
-                <span className="form-icon">＋</span>
-                <div>
-                  <b>Нова задача</b>
-                  <small>Буде додана у колонку «Заплановано»</small>
-                </div>
-              </div>
-              <input
-                autoFocus
-                placeholder="Що потрібно зробити?"
-                value={taskTitle}
-                onChange={(event) => setTaskTitle(event.target.value)}
-                maxLength={240}
-                required
-              />
-              <select
-                value={priority}
-                onChange={(event) =>
-                  setPriority(event.target.value as typeof priority)
-                }
-              >
-                <option value="LOW">Низький</option>
-                <option value="NORMAL">Звичайний</option>
-                <option value="HIGH">Високий</option>
-                <option value="CRITICAL">Критичний</option>
-              </select>
-              <input
-                className="points-input"
-                type="number"
-                min="0"
-                max="100"
-                value={storyPoints}
-                onChange={(event) => setStoryPoints(Number(event.target.value))}
-                aria-label="Story points"
-              />
-              <button
-                className="primary-button primary-button--compact"
-                disabled={savingTask}
-              >
-                {savingTask ? "…" : "Додати"}
-              </button>
-              <button
-                type="button"
-                className="close-button"
-                onClick={() => setNewTaskOpen(false)}
-              >
-                ×
-              </button>
-            </form>
-          )}
-
-          {loading ? (
-            <div className="loading-board">
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-          ) : (
-            <div className="board" aria-label="Kanban-дошка">
-              {board?.columns.map((column) => (
-                <section className="column" key={column.columnId}>
-                  <header>
-                    <div>
-                      <i
-                        className={`status-dot status-dot--${column.status.toLowerCase()}`}
-                      />
-                      <h2>{statusLabels[column.status]}</h2>
-                      <span>{column.tasks.length}</span>
-                    </div>
-                    <button aria-label="Меню колонки">•••</button>
-                  </header>
-                  <p className="wip">
-                    WIP {column.tasks.length} /{" "}
-                    {column.wipLimit >= 100 ? "∞" : column.wipLimit}
-                  </p>
-                  <div className="task-list">
-                    {column.tasks.map((task) => (
-                      <TaskCard
-                        key={task.taskId}
-                        task={task}
-                        moving={movingTask === task.taskId}
-                        onMove={handleMove}
-                        canWrite={canWrite}
-                      />
-                    ))}
-                    {column.tasks.length === 0 && (
-                      <button
-                        className="empty-column"
-                        disabled={!canWrite}
-                        onClick={() =>
-                          column.status === "PLANNED" && setNewTaskOpen(true)
-                        }
-                      >
-                        <span>＋</span>
-                        <b>Задач поки немає</b>
-                        <small>
-                          {column.status === "PLANNED"
-                            ? "Створіть першу задачу"
-                            : "Перемістіть задачу сюди"}
-                        </small>
-                      </button>
-                    )}
-                  </div>
-                </section>
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
+    <div className="metrics">
+      <div className="metric">
+        <span>Усього задач</span>
+        <strong>{summary.total}</strong>
+        <small>{summary.storyPoints} SP заплановано</small>
+      </div>
+      <div className="metric">
+        <span>У роботі</span>
+        <strong>{summary.inProgress}</strong>
+        <small>У колонці «У роботі»</small>
+      </div>
+      <div className="metric">
+        <span>Виконано</span>
+        <strong>{summary.done}</strong>
+        <small>{donePoints} SP завершено</small>
+      </div>
+      <div className="metric">
+        <span>Прогрес проєкту</span>
+        <strong>{completion}%</strong>
+        <progress
+          value={completion}
+          max={100}
+          aria-label="Частка виконаних задач"
+        />
+      </div>
     </div>
   );
 }
 
-function App() {
-  const [session, setSession] = useState<Session | null>(() => loadSession());
-
-  function saveSession(next: Session) {
-    localStorage.setItem(sessionKey(), JSON.stringify(next));
-    setSession(next);
-  }
-
-  function resetSession() {
-    if (
-      window.confirm(
-        "Від’єднати локальний проєкт від цього браузера? Дані у PostgreSQL залишаться.",
-      )
-    ) {
-      localStorage.removeItem(sessionKey());
-      setSession(null);
-    }
-  }
-
-  if (!auth.authenticated)
-    return (
-      <main className="login-screen">
-        <div className="brand brand--large">
-          <span className="brand-mark">T</span>
-          <span>Tessera</span>
-        </div>
-        <p className="kicker">Захищений робочий простір</p>
-        <h1>Твоя команда. Твій простір. Твій прогрес.</h1>
-        <p>Увійдіть через Keycloak, щоб працювати з проєктами та задачами.</p>
-        <button
-          className="primary-button primary-button--compact"
-          onClick={() => void auth.login()}
-        >
-          Увійти
-        </button>
-      </main>
-    );
-
-  return session ? (
-    <BoardApp session={session} onReset={resetSession} />
-  ) : (
-    <Setup onReady={saveSession} />
+function DropColumn({
+  id,
+  className,
+  acceptsDrop,
+  children,
+}: {
+  id: string;
+  className: string;
+  acceptsDrop: boolean;
+  children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <section
+      ref={setNodeRef}
+      className={className + (isOver && acceptsDrop ? " column--drop-target" : "")}
+    >
+      {children}
+    </section>
   );
 }
 
-export default App;
+function DraggableCard({
+  task,
+  disabled,
+  children,
+}: {
+  task: PersistedTaskDto;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  const { setNodeRef, attributes, listeners, isDragging } = useDraggable({
+    id: task.taskId,
+    disabled,
+  });
+  return (
+    <motion.article
+      ref={setNodeRef}
+      className={`task-card${isDragging ? " task-card--dragging" : ""}`}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: isDragging ? 0.4 : 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+    >
+      {!disabled && (
+        <button
+          type="button"
+          className="drag-handle"
+          aria-label={`Перетягнути ${task.taskKey}`}
+          {...attributes}
+          {...listeners}
+        >
+          <Icon name="grip" /> Перетягнути
+        </button>
+      )}
+      {children}
+    </motion.article>
+  );
+}
+
+function Board({
+  board,
+  query,
+  members,
+  canWrite,
+  moving,
+  onMove,
+  onOpen,
+  onCreate,
+}: {
+  board: BoardDto;
+  query: string;
+  members: ProjectMemberDto[];
+  canWrite: boolean;
+  moving: boolean;
+  onMove: (task: PersistedTaskDto, target: TaskStatus) => void;
+  onOpen: (task: PersistedTaskDto) => void;
+  onCreate: () => void;
+}) {
+  const term = query.trim().toLocaleLowerCase("uk-UA");
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 180, tolerance: 8 },
+    }),
+  );
+  const draggedTask = board.columns
+    .flatMap((column) => column.tasks)
+    .find((task) => task.taskId === draggingId);
+  return (
+    <DndContext
+      sensors={sensors}
+      autoScroll={false}
+      onDragStart={({ active }) => setDraggingId(String(active.id))}
+      onDragCancel={() => setDraggingId(null)}
+      onDragEnd={({ over }) => {
+        const column = board.columns.find((item) => item.columnId === over?.id);
+        if (
+          draggedTask &&
+          column &&
+          column.tasks.length < column.wipLimit &&
+          draggedTask.status !== column.status
+        )
+          onMove(draggedTask, column.status);
+        setDraggingId(null);
+      }}
+    >
+      <div className="board" aria-label="Kanban-дошка">
+        {board.columns.map((column) => {
+          const visible = column.tasks.filter((task) =>
+            `${task.taskKey} ${task.title} ${task.description}`
+              .toLocaleLowerCase("uk-UA")
+              .includes(term),
+          );
+          const full = column.tasks.length >= column.wipLimit;
+          const acceptsDrop = Boolean(
+            canWrite &&
+            !moving &&
+            draggedTask &&
+            !full &&
+            draggedTask.status !== column.status,
+          );
+          return (
+            <DropColumn
+              id={column.columnId}
+              acceptsDrop={acceptsDrop}
+              className={`column status--${column.status.toLowerCase()}${draggingId ? (acceptsDrop ? " column--can-drop" : " column--no-drop") : ""}`}
+              key={column.columnId}
+            >
+              <header className="column-header">
+                <h2>
+                  <i />
+                  {statusLabels[column.status]}{" "}
+                  <span>{column.tasks.length}</span>
+                </h2>
+                {column.status === "PLANNED" && canWrite && (
+                  <button
+                    className="button button--icon"
+                    title="Нова задача"
+                    aria-label="Нова задача в колонці Заплановано"
+                    onClick={onCreate}
+                  >
+                    <Icon name="plus" />
+                  </button>
+                )}
+              </header>
+              <p
+                className={
+                  full ? "column-limit column-limit--full" : "column-limit"
+                }
+              >
+                {column.tasks.length} / {column.wipLimit} · WIP
+                {full ? " · Ліміт досягнуто" : ""}
+              </p>
+              <div className="task-list">
+                {visible.map((task) => {
+                  const assignee = members.find(
+                    (member) => member.userId === task.assigneeId,
+                  );
+                  const targets = statusOrder.filter(
+                    (status) => status !== task.status,
+                  );
+                  return (
+                    <DraggableCard
+                      key={task.taskId}
+                      task={task}
+                      disabled={!canWrite || moving}
+                    >
+                      <div className="task-top">
+                        <span className="task-key">{task.taskKey}</span>
+                        <span
+                          className={`tag priority--${task.priority.toLowerCase()}`}
+                        >
+                          {priorityLabels[task.priority]}
+                        </span>
+                      </div>
+                      <button
+                        className="task-title"
+                        onClick={() => onOpen(task)}
+                      >
+                        {task.title}
+                      </button>
+                      {task.dueDate && (
+                        <span className="task-date">
+                          <Icon name="calendar" />
+                          {dateLabel(task.dueDate)}
+                        </span>
+                      )}
+                      <div className="task-footer">
+                        <span
+                          className="avatar"
+                          title={assignee?.displayName ?? "Не призначено"}
+                          aria-label={assignee?.displayName ?? "Не призначено"}
+                        >
+                          {assignee ? initials(assignee.displayName) : "—"}
+                        </span>
+                        <span className="task-points" title="Story points">
+                          {task.storyPoints} SP
+                        </span>
+                      </div>
+                      {canWrite && (
+                        <select
+                          className="move-select"
+                          value=""
+                          disabled={moving}
+                          aria-label={`Статус задачі ${task.taskKey}`}
+                          onChange={(event) =>
+                            onMove(task, event.target.value as TaskStatus)
+                          }
+                        >
+                          <option value="" disabled>
+                            Змінити статус
+                          </option>
+                          {targets.map((status) => (
+                            <option key={status} value={status}>
+                              {statusLabels[status]}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </DraggableCard>
+                  );
+                })}
+                {visible.length === 0 && (
+                  <div className="empty-column">
+                    {term ? "Немає збігів" : "Поки немає задач"}
+                  </div>
+                )}
+              </div>
+            </DropColumn>
+          );
+        })}
+      </div>
+      <DragOverlay>
+        {draggedTask ? (
+          <motion.div
+            className="task-card drag-overlay"
+            initial={{ scale: 0.98 }}
+            animate={{ scale: 1.04, rotate: -3 }}
+          >
+            <span className="task-key">{draggedTask.taskKey}</span>
+            <strong>{draggedTask.title}</strong>
+          </motion.div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+const activityLabels: Record<ActivityDto["kind"], string> = {
+  CREATED: "Створення задачі",
+  UPDATED: "Редагування задачі",
+  MOVED: "Зміна статусу",
+  DELETED: "Видалення задачі",
+  COMMENTED: "Додавання коментаря",
+  ATTACHED: "Додавання файлу",
+};
+const activityTime = new Intl.DateTimeFormat("uk-UA", {
+  dateStyle: "short",
+  timeStyle: "short",
+});
+
+function Activity({ events }: { events: ActivityDto[] }) {
+  return (
+    <div className="panel">
+      {events.length === 0 && (
+        <p className="muted">Записи з’являться після першої зміни задачі.</p>
+      )}
+      {events.map((event) => (
+        <div className="data-row" key={event.eventId}>
+          <span className="row-icon">
+            <Icon name="activity" />
+          </span>
+          <div>
+            <strong>
+              {activityLabels[event.kind]} · {event.taskKey}
+            </strong>
+            <small>
+              {event.actor}
+              {event.fromStatus &&
+                event.toStatus &&
+                ` · ${statusLabels[event.fromStatus]} → ${statusLabels[event.toStatus]}`}
+            </small>
+          </div>
+          <time dateTime={event.createdAt}>
+            {activityTime.format(new Date(event.createdAt))}
+          </time>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InviteDialog({
+  projectId,
+  onClose,
+  onChanged,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onChanged: (message: string) => void;
+}) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setError("");
+    setBusy(true);
+    try {
+      await addProjectMember(
+        projectId,
+        String(form.get("email")).trim(),
+        String(form.get("role")) as "ADMIN" | "MEMBER" | "VIEWER",
+      );
+      onChanged("Доступ учасника оновлено.");
+      onClose();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Надати доступ"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <form
+        className="dialog-body stack"
+        onSubmit={(event) => void submit(event)}
+      >
+        <p className="muted">
+          Вкажіть email людини, яка вже хоч раз увійшла в Tessera. Якщо вона вже
+          є в команді, її роль оновиться.
+        </p>
+        {error && <Notice error>{error}</Notice>}
+        <label>
+          Електронна пошта{" "}
+          <input
+            type="email"
+            name="email"
+            required
+            maxLength={320}
+            autoFocus
+            placeholder="member@tessera.local"
+          />
+        </label>
+        <label>
+          Роль{" "}
+          <select name="role" defaultValue="MEMBER">
+            {(["MEMBER", "VIEWER", "ADMIN"] as const).map((role) => (
+              <option key={role} value={role}>
+                {roleLabels[role]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="actions">
+          <button className="button button--primary" disabled={busy}>
+            {busy ? "Зберігаємо…" : "Зберегти доступ"}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+function RemoveMemberDialog({
+  projectId,
+  member,
+  onClose,
+  onChanged,
+}: {
+  projectId: string;
+  member: ProjectMemberDto;
+  onClose: () => void;
+  onChanged: (message: string) => void;
+}) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function confirm() {
+    setBusy(true);
+    try {
+      await removeProjectMember(projectId, member.userId);
+      onChanged(`${member.displayName} більше не має доступу до проєкту.`);
+      onClose();
+    } catch (caught) {
+      setError(errorMessage(caught));
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      title="Виключити учасника"
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <div className="dialog-body stack">
+        <p>
+          Прибрати доступ {member.displayName} ({member.email}) до цього
+          проєкту? Задачі, призначені цій людині, стануть непризначеними.
+        </p>
+        {error && <Notice error>{error}</Notice>}
+        <div className="actions">
+          <button
+            className="button button--secondary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Скасувати
+          </button>
+          <button
+            className="button button--danger"
+            disabled={busy}
+            onClick={() => void confirm()}
+          >
+            {busy ? "Виключаємо…" : "Виключити з проєкту"}
+          </button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function Workspace({
+  session,
+  onSwitch,
+}: {
+  session: Session;
+  onSwitch: () => void;
+}) {
+  const { projectId } = session;
+  const [page, setPage] = useState<Page>("board");
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [editor, setEditor] = useState<PersistedTaskDto | "new" | null>(null);
+  const [invite, setInvite] = useState(false);
+  const [removing, setRemoving] = useState<ProjectMemberDto | null>(null);
+  const [data, setData] = useState<{
+    board: BoardDto;
+    role: ProjectRole;
+    members: ProjectMemberDto[];
+    activity: ActivityDto[];
+  }>();
+  const requestVersion = useRef(0);
+  const board = data?.board;
+  const canManage = data?.role === "OWNER" || data?.role === "ADMIN";
+  const canWrite = canManage || data?.role === "MEMBER";
+
+  const refresh = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setRefreshing(true);
+    try {
+      const [board, { role }, members, activity] = await Promise.all([
+        getBoard(projectId),
+        myProjectRole(projectId),
+        listMembers(projectId),
+        listActivity(projectId),
+      ]);
+      if (version === requestVersion.current)
+        setData({ board, role, members, activity });
+    } catch (caught) {
+      if (version === requestVersion.current) setError(errorMessage(caught));
+    } finally {
+      if (version === requestVersion.current) setRefreshing(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    // The initial remote fetch synchronizes this screen with the project.
+    // oxlint-disable-next-line react/set-state-in-effect
+    void refresh();
+    return () => {
+      requestVersion.current += 1;
+    };
+  }, [refresh]);
+
+  function changed(text: string) {
+    setError("");
+    setMessage(text);
+    void refresh();
+  }
+
+  async function move(task: PersistedTaskDto, target: TaskStatus) {
+    setMoving(true);
+    setMessage("");
+    setError("");
+    try {
+      await moveTask(task.taskId, target, task.version);
+      setMessage(`${task.taskKey} переміщено до «${statusLabels[target]}».`);
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      await refresh();
+      setMoving(false);
+    }
+  }
+
+  const current = pages[page];
+  const datedTasks =
+    board?.columns
+      .flatMap((column) => column.tasks)
+      .filter((task) => task.dueDate)
+      .sort((a, b) => (a.dueDate ?? "").localeCompare(b.dueDate ?? "")) ?? [];
+
+  return (
+    <div className="app-shell">
+      <aside className="rail">
+        <Brand />
+        <button
+          className="rail-project"
+          title="Змінити проєкт"
+          onClick={onSwitch}
+        >
+          <span className="project-symbol">
+            {session.projectCode.slice(0, 3)}
+          </span>
+          <span>
+            <strong>{session.projectName}</strong>
+            <small>Змінити проєкт</small>
+          </span>
+        </button>
+        <nav aria-label="Розділи проєкту">
+          {pageOrder.map((name) => (
+            <button
+              key={name}
+              className="nav-item"
+              aria-current={page === name ? "page" : undefined}
+              onClick={() => setPage(name)}
+            >
+              <Icon name={pages[name].icon} />
+              <span>{pages[name].label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="rail-profile">
+          <span className="avatar">{initials(userName())}</span>
+          <span>
+            <strong>{userName()}</strong>
+            <small>{data ? roleLabels[data.role] : "Tessera"}</small>
+          </span>
+          <button
+            className="button button--icon"
+            onClick={logout}
+            title="Вийти"
+            aria-label="Вийти"
+          >
+            <Icon name="exit" />
+          </button>
+        </div>
+      </aside>
+      <main className="workspace">
+        <header className="topbar">
+          <div className="breadcrumbs">
+            <span>{session.workspaceName}</span>
+            <span aria-hidden="true">/</span>
+            <strong>{session.projectName}</strong>
+          </div>
+          <button
+            className="button button--secondary"
+            disabled={refreshing}
+            onClick={() => {
+              setError("");
+              setMessage("");
+              void refresh();
+            }}
+          >
+            <Icon name="refresh" /> Оновити
+          </button>
+        </header>
+        <div className="content stack">
+          <header className="page-heading">
+            <div>
+              <p className="eyebrow">Проєкт · {session.projectCode}</p>
+              <h1>{current.title}</h1>
+              <p className="muted">{current.description}</p>
+            </div>
+            <div className="actions">
+              {page === "board" && canWrite && (
+                <button
+                  className="button button--primary"
+                  onClick={() => setEditor("new")}
+                >
+                  <Icon name="plus" /> Нова задача
+                </button>
+              )}
+              {page === "team" && canManage && (
+                <button
+                  className="button button--primary"
+                  onClick={() => setInvite(true)}
+                >
+                  <Icon name="plus" /> Надати доступ
+                </button>
+              )}
+            </div>
+          </header>
+          {error && <Notice error>{error}</Notice>}
+          {message && <Notice>{message}</Notice>}
+          {!data && !error && (
+            <p className="muted" role="status">
+              Завантажуємо проєкт…
+            </p>
+          )}
+          {!data && error && (
+            <button
+              className="button button--secondary self-start"
+              onClick={onSwitch}
+            >
+              <Icon name="folder" /> Обрати інший проєкт
+            </button>
+          )}
+          {data && (
+            <motion.div
+              key={page}
+              className="stack page-body"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.22 }}
+            >
+              {(page === "board" || page === "overview") && (
+                <Metrics board={data.board} />
+              )}
+              {page === "board" && (
+                <>
+                  <div className="board-toolbar">
+                    <label className="search">
+                      <Icon name="search" />
+                      <input
+                        type="search"
+                        aria-label="Пошук задач"
+                        placeholder="Пошук за назвою або кодом"
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                      />
+                    </label>
+                    {canWrite && (
+                      <span className="board-hint">
+                        Перетягніть картку в потрібну колонку
+                      </span>
+                    )}
+                    {data.role === "VIEWER" && (
+                      <span className="tag">
+                        <Icon name="lock" /> Лише перегляд
+                      </span>
+                    )}
+                  </div>
+                  <Board
+                    board={data.board}
+                    query={query}
+                    members={data.members}
+                    moving={moving}
+                    canWrite={canWrite}
+                    onMove={(task, target) => void move(task, target)}
+                    onOpen={setEditor}
+                    onCreate={() => setEditor("new")}
+                  />
+                </>
+              )}
+              {page === "overview" && (
+                <div className="overview-grid">
+                  <section className="panel stack">
+                    <h2>Розподіл за статусами</h2>
+                    {data.board.columns.map((column) => (
+                      <div
+                        className={`status-line status--${column.status.toLowerCase()}`}
+                        key={column.columnId}
+                      >
+                        <span>
+                          <i />
+                          {statusLabels[column.status]}
+                        </span>
+                        <strong>{column.tasks.length}</strong>
+                      </div>
+                    ))}
+                  </section>
+                  <section className="panel stack">
+                    <h2>Наскрізний сценарій</h2>
+                    <ol className="flow">
+                      <li>
+                        <strong>Boundary · React і REST</strong>
+                        <span>
+                          Користувач змінює статус, API перевіряє дані запиту.
+                        </span>
+                      </li>
+                      <li>
+                        <strong>Control · NestJS</strong>
+                        <span>
+                          Сервіс перевіряє право на зміну задачі та викликає
+                          репозиторій.
+                        </span>
+                      </li>
+                      <li>
+                        <strong>Entity · State та WIP</strong>
+                        <span>
+                          Дозволений перехід і місткість цільової колонки
+                          перевіряються до запису.
+                        </span>
+                      </li>
+                      <li>
+                        <strong>Persistence · PostgreSQL</strong>
+                        <span>
+                          Статус і запис у журналі фіксуються в одній
+                          транзакції.
+                        </span>
+                      </li>
+                    </ol>
+                  </section>
+                </div>
+              )}
+              {page === "calendar" && (
+                <section className="panel">
+                  {datedTasks.length === 0 && (
+                    <p className="muted">
+                      Дедлайнів ще немає. Дату можна встановити в деталях
+                      задачі.
+                    </p>
+                  )}
+                  {datedTasks.map((task) => (
+                    <button
+                      type="button"
+                      className="data-row data-row--button"
+                      key={task.taskId}
+                      onClick={() => setEditor(task)}
+                    >
+                      <span className="row-icon">
+                        <Icon name="calendar" />
+                      </span>
+                      <span>
+                        <strong>{task.title}</strong>
+                        <small>
+                          {task.taskKey} · {statusLabels[task.status]}
+                        </small>
+                      </span>
+                      <time dateTime={task.dueDate ?? undefined}>
+                        {dateLabel(task.dueDate!)}
+                      </time>
+                    </button>
+                  ))}
+                </section>
+              )}
+              {page === "team" && (
+                <section className="panel">
+                  {data.members.map((member) => (
+                    <div className="data-row" key={member.userId}>
+                      <span className="avatar">
+                        {initials(member.displayName)}
+                      </span>
+                      <div>
+                        <strong>{member.displayName}</strong>
+                        <small>{member.email}</small>
+                      </div>
+                      <span className="member-actions">
+                        <span className="tag">{roleLabels[member.role]}</span>
+                        {canManage &&
+                          member.role !== "OWNER" &&
+                          (data.role === "OWNER" || member.role !== "ADMIN") &&
+                          member.email.toLowerCase() !==
+                            String(
+                              auth.tokenParsed?.email ?? "",
+                            ).toLowerCase() && (
+                            <button
+                              className="button button--icon member-remove"
+                              title={`Виключити ${member.displayName}`}
+                              aria-label={`Виключити ${member.displayName}`}
+                              onClick={() => setRemoving(member)}
+                            >
+                              <Icon name="trash" />
+                            </button>
+                          )}
+                      </span>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {page === "activity" && <Activity events={data.activity} />}
+            </motion.div>
+          )}
+        </div>
+      </main>
+      {editor && data && (
+        <TaskDialog
+          key={editor === "new" ? "new" : editor.taskId}
+          task={editor === "new" ? undefined : editor}
+          projectId={projectId}
+          members={data.members}
+          canWrite={canWrite}
+          canDelete={canManage}
+          onChanged={changed}
+          onClose={() => setEditor(null)}
+        />
+      )}
+      {invite && canManage && (
+        <InviteDialog
+          projectId={projectId}
+          onChanged={changed}
+          onClose={() => setInvite(false)}
+        />
+      )}
+      {removing && canManage && (
+        <RemoveMemberDialog
+          projectId={projectId}
+          member={removing}
+          onChanged={changed}
+          onClose={() => setRemoving(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState<Session | null>(loadSession);
+  if (!auth.authenticated) return <Welcome onLogin={() => void auth.login()} />;
+
+  return session ? (
+    <Workspace
+      key={session.projectId}
+      session={session}
+      onSwitch={() => {
+        localStorage.removeItem(sessionKey());
+        setSession(null);
+      }}
+    />
+  ) : (
+    <Setup
+      onReady={(next) => {
+        localStorage.setItem(sessionKey(), JSON.stringify(next));
+        setSession(next);
+      }}
+    />
+  );
+}

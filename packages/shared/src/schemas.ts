@@ -47,10 +47,19 @@ export const projectSchema = createProjectSchema.extend({
   updatedAt: z.iso.datetime(),
 });
 
+const taskDetails = {
+  description: z.string().trim().max(4000),
+  dueDate: z.iso.date().nullable(),
+  assigneeId: resourceIdSchema.nullable(),
+};
+
 export const createTaskSchema = z.strictObject({
   title: z.string().trim().min(1).max(240),
   priority: taskPrioritySchema.optional().default("NORMAL"),
   storyPoints: z.number().int().min(0).max(100).optional().default(0),
+  description: taskDetails.description.optional(),
+  dueDate: taskDetails.dueDate.optional(),
+  assigneeId: taskDetails.assigneeId.optional(),
 });
 
 export const taskSchema = z.object({
@@ -71,6 +80,7 @@ export const moveTaskCommandSchema = z.object({
 });
 
 export const persistedTaskSchema = taskSchema.extend({
+  ...taskDetails,
   projectId: resourceIdSchema,
   columnId: resourceIdSchema,
   createdAt: z.iso.datetime(),
@@ -82,6 +92,69 @@ export const movePersistedTaskSchema = z.strictObject({
   expectedVersion: z.number().int().positive(),
 });
 export type MovePersistedTaskCommand = z.infer<typeof movePersistedTaskSchema>;
+
+export const updateTaskSchema = z.strictObject({
+  title: createTaskSchema.shape.title.optional(),
+  priority: taskPrioritySchema.optional(),
+  storyPoints: z.number().int().min(0).max(100).optional(),
+  description: taskDetails.description.optional(),
+  dueDate: taskDetails.dueDate.optional(),
+  assigneeId: taskDetails.assigneeId.optional(),
+  expectedVersion: z.number().int().positive(),
+});
+export const taskVersionSchema = updateTaskSchema.pick({
+  expectedVersion: true,
+});
+export const commentSchema = z.strictObject({
+  body: z.string().trim().min(1).max(2000),
+});
+export const maxAttachmentBytes = 2 * 1024 * 1024;
+export const attachmentSchema = z.strictObject({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(160)
+    .regex(/^[^\\/\p{Cc}]+$/u),
+  content: z
+    .base64()
+    .min(4)
+    .max(Math.ceil(maxAttachmentBytes / 3) * 4),
+});
+
+export interface ProjectMemberDto {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: ProjectRole;
+}
+
+export interface TaskCommentDto {
+  commentId: string;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface AttachmentDto {
+  attachmentId: string;
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+export interface ActivityDto {
+  eventId: string;
+  kind: "CREATED" | "UPDATED" | "MOVED" | "DELETED" | "COMMENTED" | "ATTACHED";
+  taskKey: string;
+  actor: string;
+  createdAt: string;
+  fromStatus: PersistedTaskDto["status"] | null;
+  toStatus: PersistedTaskDto["status"] | null;
+}
+
+export type UpdateTaskCommand = z.infer<typeof updateTaskSchema>;
+export type AttachmentCommand = z.infer<typeof attachmentSchema>;
 
 export const domainEventSchema = z.object({
   eventId: z.string().min(1),

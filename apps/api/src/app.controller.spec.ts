@@ -24,11 +24,11 @@ describe('AppController', () => {
   });
 
   describe('health', () => {
-    it('reports a healthy Sprint 2 API with PostgreSQL', async () => {
+    it('reports a healthy Sprint 3 API with PostgreSQL', async () => {
       await expect(appController.getHealth()).resolves.toMatchObject({
         status: 'ok',
         service: '@tessera/api',
-        sprint: 2,
+        sprint: 3,
         database: 'up',
       });
     });

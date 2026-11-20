@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -15,6 +16,12 @@ import {
   createWorkspaceSchema,
   resourceIdSchema,
   movePersistedTaskSchema,
+  updateTaskSchema,
+  taskVersionSchema,
+  commentSchema,
+  attachmentSchema,
+  type UpdateTaskCommand,
+  type AttachmentCommand,
   type MovePersistedTaskCommand,
   type CreateProjectCommand,
   type CreateTaskCommand,
@@ -64,6 +71,14 @@ export class ProjectsController {
     return this.projectsService.listProjects(workspaceId, request.user);
   }
 
+  @Delete('projects/:projectId')
+  deleteProject(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.deleteProject(projectId, request.user);
+  }
+
   @Post('projects/:projectId/tasks')
   @HttpCode(HttpStatus.CREATED)
   createTask(
@@ -108,6 +123,83 @@ export class ProjectsController {
     return this.projectsService.myProjectRole(projectId, request.user);
   }
 
+  @Get('projects/:projectId/members')
+  members(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.listMembers(projectId, request.user);
+  }
+
+  @Get('projects/:projectId/activity')
+  activity(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.listActivity(projectId, request.user);
+  }
+
+  @Patch('tasks/:taskId')
+  updateTask(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Body({ schema: updateTaskSchema }) command: UpdateTaskCommand,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.updateTask(taskId, command, request.user);
+  }
+
+  @Delete('tasks/:taskId')
+  deleteTask(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Body({ schema: taskVersionSchema }) command: { expectedVersion: number },
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.deleteTask(
+      taskId,
+      command.expectedVersion,
+      request.user,
+    );
+  }
+
+  @Get('tasks/:taskId/discussion')
+  taskDiscussion(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.taskDiscussion(taskId, request.user);
+  }
+
+  @Post('tasks/:taskId/comments')
+  comment(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Body({ schema: commentSchema }) command: { body: string },
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.addComment(taskId, command.body, request.user);
+  }
+
+  @Post('tasks/:taskId/attachments')
+  attach(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Body({ schema: attachmentSchema }) command: AttachmentCommand,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.addAttachment(taskId, command, request.user);
+  }
+
+  @Get('tasks/:taskId/attachments/:attachmentId')
+  attachment(
+    @Param('taskId', { schema: resourceIdSchema }) taskId: string,
+    @Param('attachmentId', { schema: resourceIdSchema }) attachmentId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.getAttachment(
+      taskId,
+      attachmentId,
+      request.user,
+    );
+  }
+
   @Post('projects/:projectId/members')
   addMember(
     @Param('projectId', { schema: resourceIdSchema }) projectId: string,
@@ -126,5 +218,14 @@ export class ProjectsController {
       command.role,
       request.user,
     );
+  }
+
+  @Delete('projects/:projectId/members/:memberId')
+  removeMember(
+    @Param('projectId', { schema: resourceIdSchema }) projectId: string,
+    @Param('memberId', { schema: resourceIdSchema }) memberId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.projectsService.removeMember(projectId, memberId, request.user);
   }
 }
